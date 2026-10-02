@@ -1,6 +1,6 @@
-# Builds and tests the Java scanner. Its scan result model is generated from
-# the scan result schema at the graphnous-schemas commit the pom pins
-# (graphnous.schema.version).
+# Builds and tests the Java scanner, and builds its image. Its scan result
+# model is generated from the scan result schema at the graphnous-schemas
+# commit the pom pins (graphnous.schema.version).
 
 name: CI
 
@@ -24,7 +24,18 @@ jobs:
 
       - run: ./mvnw -B verify
 
-      - uses: actions/upload-artifact@v4
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
         with:
-          name: java-scanner
-          path: java-scanner-app/target/java-scanner.jar
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
