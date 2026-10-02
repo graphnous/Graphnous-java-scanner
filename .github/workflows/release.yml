@@ -1,0 +1,32 @@
+# Publishes java-scanner.jar as a release asset for each v* tag, such as
+# v0.1.0. The server's image downloads it from the release of the version it
+# pins.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - run: ./mvnw -B verify
+
+      - name: Publish the release
+        run: gh release create "$GITHUB_REF_NAME" java-scanner-app/target/java-scanner.jar --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,30 @@
+# Builds and tests the Java scanner. Its scan result model is generated from
+# the scan result schema at the graphnous-schemas commit the pom pins
+# (graphnous.schema.version).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - run: ./mvnw -B verify
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-scanner
+          path: java-scanner-app/target/java-scanner.jar
