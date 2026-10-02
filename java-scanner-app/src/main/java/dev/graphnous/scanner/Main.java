@@ -95,6 +95,11 @@ public class Main {
             target = ".";
         }
 
+        // An empty version is an unknown one, so a caller can always pass it
+        if (javaVersion != null && javaVersion.isBlank()) {
+            javaVersion = null;
+        }
+
         if (output == null) {
             throw new IllegalArgumentException(
                 "Missing required argument: --output"
