@@ -2,7 +2,7 @@ package dev.graphnous.scanner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
-import dev.graphnous.core.model.ScanTarget;
+import dev.graphnous.scanner.model.ScanTarget;
 
 import java.nio.file.Path;
 
@@ -93,6 +93,11 @@ public class Main {
 
         if (target == null) {
             target = ".";
+        }
+
+        // An empty version is an unknown one, so a caller can always pass it
+        if (javaVersion != null && javaVersion.isBlank()) {
+            javaVersion = null;
         }
 
         if (output == null) {

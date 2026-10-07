@@ -1,9 +1,9 @@
 package dev.graphnous.scanner.maven;
 
 import dev.graphnous.scanner.ScanLog;
-import dev.graphnous.core.model.Dependency;
-import dev.graphnous.core.model.Module;
-import dev.graphnous.core.model.ScanTarget;
+import dev.graphnous.scanner.model.Dependency;
+import dev.graphnous.scanner.model.Module;
+import dev.graphnous.scanner.model.ScanTarget;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

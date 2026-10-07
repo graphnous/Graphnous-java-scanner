@@ -17,19 +17,11 @@
     -->
     <artifactId>java-scanner-app</artifactId>
 
+    <properties>
+        <scan-result.schema.directory>${project.build.directory}/scan-result-schema</scan-result.schema.directory>
+    </properties>
+
     <dependencies>
-        <dependency>
-            <groupId>dev.graphnous</groupId>
-            <artifactId>graphnous-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>dev.graphnous</groupId>
-            <artifactId>graphnous-scanner-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>dev.graphnous</groupId>
-            <artifactId>graphnous-scanner-java</artifactId>
-        </dependency>
         <dependency>
             <groupId>com.github.javaparser</groupId>
             <artifactId>javaparser-core</artifactId>
@@ -41,7 +33,63 @@
     </dependencies>
 
     <build>
+        <!-- Released as java-scanner.jar, the name the server and the CLI expect -->
+        <finalName>java-scanner</finalName>
+
         <plugins>
+            <plugin>
+                <!-- Downloads the schema at graphnous.schema.url, before the model is generated from it -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>download-scan-result-schema</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${scan-result.schema.directory}"/>
+                                <get src="${graphnous.schema.url}"
+                                     dest="${scan-result.schema.directory}/scan-result.schema.json"
+                                     retries="3"
+                                     usetimestamp="false"/>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- The scan result model, from the downloaded schema -->
+                <groupId>org.jsonschema2pojo</groupId>
+                <artifactId>jsonschema2pojo-maven-plugin</artifactId>
+                <configuration>
+                    <sourceDirectory>${scan-result.schema.directory}</sourceDirectory>
+                    <targetPackage>dev.graphnous.scanner.model</targetPackage>
+                    <outputDirectory>${project.build.directory}/generated-sources/jsonschema2pojo</outputDirectory>
+                    <sourceType>jsonschema</sourceType>
+
+                    <includeHashcodeAndEquals>true</includeHashcodeAndEquals>
+                    <includeToString>true</includeToString>
+                    <includeJsr303Annotations>false</includeJsr303Annotations>
+
+                    <usePrimitives>false</usePrimitives>
+                    <initializeCollections>true</initializeCollections>
+
+                    <includeConstructors>false</includeConstructors>
+                    <generateBuilders>false</generateBuilders>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>generate-scan-result-model</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>

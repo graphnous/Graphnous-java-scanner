@@ -1,16 +1,16 @@
 package dev.graphnous.scanner;
 
 import com.github.javaparser.ParserConfiguration;
-import dev.graphnous.core.model.Annotation;
-import dev.graphnous.core.model.Class;
-import dev.graphnous.core.model.EnumConstant;
-import dev.graphnous.core.model.Field;
-import dev.graphnous.core.model.File;
-import dev.graphnous.core.model.Method;
-import dev.graphnous.core.model.Modifier;
-import dev.graphnous.core.model.Parameter;
-import dev.graphnous.core.model.RecordComponent;
-import dev.graphnous.core.model.TypeRef;
+import dev.graphnous.scanner.model.Annotation;
+import dev.graphnous.scanner.model.Class;
+import dev.graphnous.scanner.model.EnumConstant;
+import dev.graphnous.scanner.model.Field;
+import dev.graphnous.scanner.model.File;
+import dev.graphnous.scanner.model.Method;
+import dev.graphnous.scanner.model.Modifier;
+import dev.graphnous.scanner.model.Parameter;
+import dev.graphnous.scanner.model.RecordComponent;
+import dev.graphnous.scanner.model.TypeRef;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

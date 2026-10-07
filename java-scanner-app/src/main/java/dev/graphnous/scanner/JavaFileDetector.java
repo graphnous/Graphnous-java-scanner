@@ -1,10 +1,10 @@
 package dev.graphnous.scanner;
 
-import dev.graphnous.core.model.Class;
-import dev.graphnous.core.model.File;
-import dev.graphnous.core.model.Module;
-import dev.graphnous.core.model.Package;
-import dev.graphnous.core.model.ScanTarget;
+import dev.graphnous.scanner.model.Class;
+import dev.graphnous.scanner.model.File;
+import dev.graphnous.scanner.model.Module;
+import dev.graphnous.scanner.model.Package;
+import dev.graphnous.scanner.model.ScanTarget;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;

@@ -13,7 +13,7 @@ import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.type.TypeParameter;
 import com.github.javaparser.ast.type.VoidType;
 import com.github.javaparser.ast.type.WildcardType;
-import dev.graphnous.core.model.TypeRef;
+import dev.graphnous.scanner.model.TypeRef;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;

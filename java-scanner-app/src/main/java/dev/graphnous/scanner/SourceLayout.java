@@ -1,7 +1,7 @@
 package dev.graphnous.scanner;
 
 import dev.graphnous.scanner.java.maven.MavenPom;
-import dev.graphnous.core.model.File;
+import dev.graphnous.scanner.model.File;
 
 import java.nio.file.Files;
 import java.nio.file.Path;

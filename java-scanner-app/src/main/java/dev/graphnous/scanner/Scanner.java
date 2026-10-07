@@ -1,12 +1,12 @@
 package dev.graphnous.scanner;
 
-import dev.graphnous.core.model.ScanResult;
-import dev.graphnous.core.model.ScanTarget;
+import dev.graphnous.scanner.model.ScanResultSchema;
+import dev.graphnous.scanner.model.ScanTarget;
 
 import java.nio.file.Path;
 
 public interface Scanner {
 
-    ScanResult scan(Path path, ScanTarget target);
+    ScanResultSchema scan(Path path, ScanTarget target);
 
 }
