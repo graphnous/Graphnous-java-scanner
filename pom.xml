@@ -22,7 +22,7 @@
             at this commit. Override graphnous.schema.url with a local file
             to build against another copy.
         -->
-        <graphnous.schema.version>b8c8b252b1a399376b7770a447743a173b946974</graphnous.schema.version>
+        <graphnous.schema.version>c83b6d5d5ae5e92945ac3413c2385b8ae1ea88f0</graphnous.schema.version>
         <graphnous.schema.url>https://raw.githubusercontent.com/graphnous/graphnous-schemas/${graphnous.schema.version}/scan/scan-result.schema.json</graphnous.schema.url>
 
         <jackson.version>2.22.2</jackson.version>

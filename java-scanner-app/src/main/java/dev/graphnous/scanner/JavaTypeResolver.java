@@ -13,8 +13,10 @@ import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.type.TypeParameter;
 import com.github.javaparser.ast.type.VoidType;
 import com.github.javaparser.ast.type.WildcardType;
+import dev.graphnous.scanner.model.TypeRef;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -92,6 +94,62 @@ class JavaTypeResolver {
             case WildcardType wildcard -> wildcard(wildcard, context);
             default -> type.asString();
         };
+    }
+
+    /**
+     * The resolved type with the qualified names of the classes it refers
+     * to, including through type arguments, bounds and array element
+     * types. Primitive types and type variables are left out.
+     */
+    TypeRef typeRef(
+        final Type type,
+        final Node context
+    ) {
+        return typeRef(type, context, "");
+    }
+
+    /**
+     * @param suffix appended to the name, e.g. {@code ...} for varargs
+     */
+    TypeRef typeRef(
+        final Type type,
+        final Node context,
+        final String suffix
+    ) {
+        final var typeRef = new TypeRef();
+        final var references = new LinkedHashSet<String>();
+
+        typeRef.setName(resolve(type, context) + suffix);
+        references(type, context, references);
+        typeRef.setReferences(references);
+
+        return typeRef;
+    }
+
+    private void references(
+        final Type type,
+        final Node context,
+        final Set<String> references
+    ) {
+        switch (type) {
+            case ArrayType array -> references(array.getComponentType(), context, references);
+            case ClassOrInterfaceType classType -> {
+                final var name = classType.getNameWithScope();
+
+                if (name.contains(".") || typeParameter(name, context).isEmpty()) {
+                    references.add(resolveName(name, context));
+                }
+
+                classType.getTypeArguments()
+                    .ifPresent(arguments -> arguments.forEach(argument -> references(argument, context, references)));
+            }
+            case WildcardType wildcard -> {
+                wildcard.getExtendedType().ifPresent(bound -> references(bound, context, references));
+                wildcard.getSuperType().ifPresent(bound -> references(bound, context, references));
+            }
+            default -> {
+            }
+        }
     }
 
     /**

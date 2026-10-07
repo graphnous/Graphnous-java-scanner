@@ -215,7 +215,7 @@ class JavaFileDetectorTest {
     }
 
     @Test
-    void setsThePackagesOfTheModuleWithReferencesToTheirClasses() throws IOException {
+    void setsThePackagesOfTheModuleAndThePackageOfEachFile() throws IOException {
         write("pom.xml", "<project/>");
         write("src/main/java/com/example/web/Api.java", "package com.example.web; class Api { }");
         write("src/main/java/com/example/Order.java", "package com.example; record Order(String id) { record Line(int quantity) { } }");
@@ -234,20 +234,14 @@ class JavaFileDetectorTest {
                 tuple("web", "com.example.web")
             );
 
-        assertThat(module.getPackages().getFirst().getClasses())
-            .extracting(Class::getQualifiedName, Class::getKind)
+        assertThat(module.getFiles())
+            .extracting(File::getPath, File::getPackage)
             .containsExactlyInAnyOrder(
-                tuple("com.example.Order", Class.Kind.RECORD),
-                tuple("com.example.Order.Line", Class.Kind.RECORD),
-                tuple("com.example.Status", Class.Kind.ENUM)
+                tuple(Path.of("src/main/java/com/example/web/Api.java").toString(), "com.example.web"),
+                tuple(Path.of("src/main/java/com/example/Order.java").toString(), "com.example"),
+                tuple(Path.of("src/main/java/com/example/Status.java").toString(), "com.example"),
+                tuple(Path.of("src/main/java/Script.java").toString(), null)
             );
-
-        assertThat(module.getPackages().getFirst().getClasses())
-            .allSatisfy(reference -> {
-                assertThat(reference.getMethods()).isNull();
-                assertThat(reference.getFields()).isNull();
-                assertThat(reference.getAnnotations()).isNull();
-            });
     }
 
     private static String sha256(final String content) {
