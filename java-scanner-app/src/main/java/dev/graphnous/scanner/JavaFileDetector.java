@@ -1,10 +1,10 @@
 package dev.graphnous.scanner;
 
-import dev.graphnous.scanner.model.Class;
-import dev.graphnous.scanner.model.File;
-import dev.graphnous.scanner.model.Module;
-import dev.graphnous.scanner.model.Package;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.Class;
+import dev.graphnous.core.model.File;
+import dev.graphnous.core.model.Module;
+import dev.graphnous.core.model.Package;
+import dev.graphnous.core.model.ScanTarget;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -19,8 +19,8 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 public class JavaFileDetector implements FileDetector {
 
@@ -137,50 +137,34 @@ public class JavaFileDetector implements FileDetector {
     }
 
     /**
-     * The packages of the files, sorted by name, each with a reference to
-     * its classes: their names and kind, as their members are already in
-     * the files. Classes in the default package are in no package.
+     * The packages of the files, sorted by name. Their classes are listed
+     * under the files, which name their package in {@link File#getPackage}.
+     * Classes in the default package are in no package.
      */
     private static List<Package> packages(final List<ParsedFile> files) {
-        final var classesByPackage = new TreeMap<String, List<Class>>();
-
-        files.stream()
-                .filter(file -> !file.packageName().isEmpty())
-                .forEach(file -> classesByPackage
-                        .computeIfAbsent(file.packageName(), name -> new ArrayList<>())
-                        .addAll(file.file().getClasses().stream().map(JavaFileDetector::reference).toList()));
-
-        return classesByPackage.entrySet()
+        return files.stream()
+                .map(ParsedFile::packageName)
+                .filter(name -> !name.isEmpty())
+                .collect(Collectors.toCollection(TreeSet::new))
                 .stream()
-                .map(entry -> {
+                .map(qualifiedName -> {
                     final var javaPackage = new Package();
-                    final var qualifiedName = entry.getKey();
 
                     javaPackage.setName(qualifiedName.substring(qualifiedName.lastIndexOf('.') + 1));
                     javaPackage.setQualifiedName(qualifiedName);
-                    javaPackage.setClasses(entry.getValue());
 
                     return javaPackage;
                 })
                 .toList();
     }
 
-    private static Class reference(final Class clazz) {
-        final var reference = new Class();
-
-        reference.setName(clazz.getName());
-        reference.setQualifiedName(clazz.getQualifiedName());
-        reference.setKind(clazz.getKind());
-
-        // Left out of the output rather than written as empty lists
-        reference.setModifiers(null);
-        reference.setTypeParameters(null);
-        reference.setInterfaces(null);
-        reference.setMethods(null);
-        reference.setFields(null);
-        reference.setAnnotations(null);
-
-        return reference;
+    /**
+     * The number of classes, including the classes nested in them.
+     */
+    private static int count(final List<Class> classes) {
+        return classes.stream()
+                .mapToInt(clazz -> 1 + count(clazz.getClasses()))
+                .sum();
     }
 
     /**
@@ -331,7 +315,7 @@ public class JavaFileDetector implements FileDetector {
 
         return new Outcome(
                 new ParsedFile(file, packageName),
-                "  " + file.getPath() + ": " + classes(file.getClasses().size())
+                "  " + file.getPath() + ": " + classes(count(file.getClasses()))
         );
     }
 

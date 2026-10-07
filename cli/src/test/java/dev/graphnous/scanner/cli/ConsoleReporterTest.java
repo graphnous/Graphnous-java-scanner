@@ -2,7 +2,7 @@ package dev.graphnous.scanner.cli;
 
 import dev.graphnous.scanner.ScanFailure;
 import dev.graphnous.scanner.ScannerListener;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.ScanTarget;
 import dev.graphnous.scanner.plan.ScanPlan;
 import org.junit.jupiter.api.Test;
 

@@ -26,7 +26,26 @@
 
         <junit.version>6.1.3</junit.version>
         <assertj.version>3.27.7</assertj.version>
+        <graphnous.version>0.1.1</graphnous.version>
     </properties>
+
+    <!--
+        dev.graphnous artifacts are hosted on GitHub Packages, which requires
+        authentication even for reads. Add a matching <server> with id "github"
+        to ~/.m2/settings.xml (username + PAT with read:packages scope).
+    -->
+    <repositories>
+        <repository>
+            <id>github</id>
+            <url>https://maven.pkg.github.com/graphnous/graphnous-app</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
 
     <dependencyManagement>
         <dependencies>
@@ -39,34 +58,39 @@
             </dependency>
 
             <!--
-                Internal modules. core, java, typescript and docker live in
-                graphnous-server/graphnous-scanner; install them first
-                (mvn install in graphnous-server).
+                Internal modules. graphnous-core (the scan result model) and the
+                scanner's core, java, typescript and docker are
+                published to GitHub Packages (see <repositories> below).
             -->
             <dependency>
                 <groupId>dev.graphnous</groupId>
+                <artifactId>graphnous-core</artifactId>
+                <version>${graphnous.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.graphnous</groupId>
                 <artifactId>graphnous-scanner-core</artifactId>
-                <version>${project.version}</version>
+                <version>${graphnous.version}</version>
             </dependency>
             <dependency>
                 <groupId>dev.graphnous</groupId>
                 <artifactId>graphnous-scanner-java</artifactId>
-                <version>${project.version}</version>
+                <version>${graphnous.version}</version>
             </dependency>
             <dependency>
                 <groupId>dev.graphnous</groupId>
                 <artifactId>java-scanner-app</artifactId>
-                <version>${project.version}</version>
+                <version>${graphnous.version}</version>
             </dependency>
             <dependency>
                 <groupId>dev.graphnous</groupId>
                 <artifactId>graphnous-scanner-typescript</artifactId>
-                <version>${project.version}</version>
+                <version>${graphnous.version}</version>
             </dependency>
             <dependency>
                 <groupId>dev.graphnous</groupId>
                 <artifactId>graphnous-scanner-docker</artifactId>
-                <version>${project.version}</version>
+                <version>${graphnous.version}</version>
             </dependency>
 
             <!-- Third party -->

@@ -2,7 +2,7 @@ package dev.graphnous.scanner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.ScanTarget;
 
 import java.nio.file.Path;
 

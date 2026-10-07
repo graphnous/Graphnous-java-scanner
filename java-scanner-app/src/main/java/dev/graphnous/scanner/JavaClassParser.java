@@ -22,13 +22,16 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
-import dev.graphnous.scanner.model.Annotation;
-import dev.graphnous.scanner.model.Class;
-import dev.graphnous.scanner.model.Field;
-import dev.graphnous.scanner.model.File;
-import dev.graphnous.scanner.model.Method;
-import dev.graphnous.scanner.model.Modifier;
-import dev.graphnous.scanner.model.Parameter;
+import dev.graphnous.core.model.Annotation;
+import dev.graphnous.core.model.Class;
+import dev.graphnous.core.model.EnumConstant;
+import dev.graphnous.core.model.Field;
+import dev.graphnous.core.model.File;
+import dev.graphnous.core.model.Method;
+import dev.graphnous.core.model.Modifier;
+import dev.graphnous.core.model.Parameter;
+import dev.graphnous.core.model.RecordComponent;
+import dev.graphnous.core.model.TypeRef;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -123,8 +126,9 @@ public class JavaClassParser {
     }
 
     /**
-     * Parses the source file and sets its classes, with their methods,
-     * fields and annotations, on {@code file}.
+     * Parses the source file and sets its package and its top-level
+     * classes, with their methods, fields, annotations and member classes,
+     * on {@code file}.
      *
      * @param index the types of the scan target, to resolve the types the
      *              file uses
@@ -140,17 +144,19 @@ public class JavaClassParser {
 
         final var resolver = new JavaTypeResolver(compilationUnit, index);
         final var annotations = new JavaAnnotationParser(resolver);
-        final var classes = new ArrayList<Class>();
+        final var packageName = packageName(compilationUnit);
 
-        compilationUnit
-            .findAll(TypeDeclaration.class, JavaClassParser::isNamed)
-            .forEach(declaration -> classes.add(
-                toClass(resolver, annotations, declaration)
-            ));
+        file.setClasses(
+            compilationUnit.getTypes()
+                .stream()
+                .map(declaration -> toClass(resolver, annotations, declaration))
+                .collect(Collectors.toCollection(ArrayList::new))
+        );
 
-        file.setClasses(classes);
+        // Absent for the default package
+        file.setPackage(packageName.isEmpty() ? null : packageName);
 
-        return packageName(compilationUnit);
+        return packageName;
     }
 
     /**
@@ -226,8 +232,34 @@ public class JavaClassParser {
             fields(resolver, annotations, clazz, declaration)
         );
 
+        if (declaration instanceof EnumDeclaration enumeration) {
+            clazz.setEnumConstants(
+                enumConstants(annotations, clazz, enumeration)
+            );
+        }
+
+        if (declaration instanceof RecordDeclaration record) {
+            clazz.setRecordComponents(
+                recordComponents(resolver, annotations, record)
+            );
+        }
+
         clazz.setAnnotations(
             annotations.annotations(declaration.getAnnotations())
+        );
+
+        // Member types; types declared in a method, an anonymous class or
+        // the body of an enum constant are left out, see isNamed
+        clazz.setClasses(
+            declaration.getMembers()
+                .stream()
+                .filter(TypeDeclaration.class::isInstance)
+                .map(member -> {
+                    final var nested = toClass(resolver, annotations, (TypeDeclaration<?>) member);
+                    nested.setNesting(Class.Nesting.MEMBER);
+                    return nested;
+                })
+                .collect(Collectors.toCollection(ArrayList::new))
         );
 
         return clazz;
@@ -258,10 +290,8 @@ public class JavaClassParser {
             case ClassOrInterfaceDeclaration type when type.isInterface() ->
                 clazz.setInterfaces(types(resolver, type.getExtendedTypes()));
             case ClassOrInterfaceDeclaration type -> {
-                type.getExtendedTypes()
-                    .getFirst()
-                    .ifPresent(superClass -> clazz.setSuperClass(resolver.resolve(superClass, superClass)));
-
+                // A Java class extends at most one class
+                clazz.setSuperClasses(types(resolver, type.getExtendedTypes()));
                 clazz.setInterfaces(types(resolver, type.getImplementedTypes()));
             }
             case NodeWithImplements<?> type -> clazz.setInterfaces(types(resolver, type.getImplementedTypes()));
@@ -270,12 +300,12 @@ public class JavaClassParser {
         }
     }
 
-    private static List<String> types(
+    private static List<TypeRef> types(
         final JavaTypeResolver resolver,
         final NodeList<ClassOrInterfaceType> types
     ) {
         return types.stream()
-            .map(type -> resolver.resolve(type, type))
+            .map(type -> resolver.typeRef(type, type))
             .collect(Collectors.toCollection(ArrayList::new));
     }
 
@@ -394,7 +424,7 @@ public class JavaClassParser {
         method.setQualifiedName(
             clazz.getQualifiedName() + "." + name
             + parameters.stream()
-                .map(Parameter::getType)
+                .map(parameter -> parameter.getType().getName())
                 .collect(Collectors.joining(", ", "(", ")"))
         );
 
@@ -407,9 +437,9 @@ public class JavaClassParser {
 
         switch (declaration) {
             case MethodDeclaration methodDeclaration ->
-                method.setReturnType(resolver.resolve(methodDeclaration.getType(), methodDeclaration));
+                method.setReturnType(resolver.typeRef(methodDeclaration.getType(), methodDeclaration));
             case AnnotationMemberDeclaration element ->
-                method.setReturnType(resolver.resolve(element.getType(), element));
+                method.setReturnType(resolver.typeRef(element.getType(), element));
             default -> {
             }
         }
@@ -441,8 +471,7 @@ public class JavaClassParser {
         );
 
         parameter.setType(
-            resolver.resolve(declaration.getType(), declaration)
-            + (declaration.isVarArgs() ? "..." : "")
+            resolver.typeRef(declaration.getType(), declaration, declaration.isVarArgs() ? "..." : "")
         );
 
         parameter.setAnnotations(
@@ -453,9 +482,54 @@ public class JavaClassParser {
     }
 
     /**
+     * The constants of an enum, in declaration order.
+     */
+    private static List<EnumConstant> enumConstants(
+        final JavaAnnotationParser annotations,
+        final Class clazz,
+        final EnumDeclaration enumeration
+    ) {
+        return enumeration.getEntries()
+            .stream()
+            .map(declaration -> {
+                final var constant = new EnumConstant();
+
+                constant.setName(declaration.getNameAsString());
+                constant.setQualifiedName(clazz.getQualifiedName() + "." + declaration.getNameAsString());
+                constant.setAnnotations(new ArrayList<>(annotations.annotations(declaration.getAnnotations())));
+
+                return constant;
+            })
+            .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /**
+     * The components of a record, in declaration order.
+     */
+    private static List<RecordComponent> recordComponents(
+        final JavaTypeResolver resolver,
+        final JavaAnnotationParser annotations,
+        final RecordDeclaration record
+    ) {
+        return record.getParameters()
+            .stream()
+            .map(declaration -> {
+                final var component = new RecordComponent();
+
+                component.setName(declaration.getNameAsString());
+                component.setType(resolver.typeRef(declaration.getType(), declaration));
+                component.setAnnotations(new ArrayList<>(annotations.annotations(declaration.getAnnotations())));
+
+                return component;
+            })
+            .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /**
      * The fields declared by the type itself: one per variable of a field
-     * declaration, the components of a record and the constants of an
-     * enum. Fields of nested types belong to those types.
+     * declaration. The components of a record and the constants of an enum
+     * are in {@link #recordComponents} and {@link #enumConstants}, and
+     * fields of nested types belong to those types.
      */
     private static List<Field> fields(
         final JavaTypeResolver resolver,
@@ -465,26 +539,6 @@ public class JavaClassParser {
     ) {
         final var fields = new ArrayList<Field>();
 
-        if (declaration instanceof RecordDeclaration record) {
-            record.getParameters().forEach(component -> fields.add(field(
-                clazz,
-                component.getNameAsString(),
-                resolver.resolve(component.getType(), component),
-                modifiers(component.getModifiers()),
-                annotations.annotations(component.getAnnotations())
-            )));
-        }
-
-        if (declaration instanceof EnumDeclaration enumeration) {
-            enumeration.getEntries().forEach(constant -> fields.add(field(
-                clazz,
-                constant.getNameAsString(),
-                clazz.getQualifiedName(),
-                new ArrayList<>(),
-                annotations.annotations(constant.getAnnotations())
-            )));
-        }
-
         declaration.getMembers().forEach(member -> {
             if (member instanceof FieldDeclaration field) {
                 // The type of the variable includes brackets written after
@@ -492,7 +546,7 @@ public class JavaClassParser {
                 field.getVariables().forEach(variable -> fields.add(field(
                     clazz,
                     variable.getNameAsString(),
-                    resolver.resolve(variable.getType(), variable),
+                    resolver.typeRef(variable.getType(), variable),
                     modifiers(field.getModifiers()),
                     annotations.annotations(field.getAnnotations())
                 )));
@@ -505,7 +559,7 @@ public class JavaClassParser {
     private static Field field(
         final Class clazz,
         final String name,
-        final String type,
+        final TypeRef type,
         final List<Modifier> modifiers,
         final List<Annotation> annotations
     ) {

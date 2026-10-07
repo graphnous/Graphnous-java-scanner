@@ -1,8 +1,8 @@
 package dev.graphnous.scanner.cli;
 
 import dev.graphnous.scanner.ScanResultWriter;
-import dev.graphnous.scanner.model.ScanResultSchema;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.ScanResult;
+import dev.graphnous.core.model.ScanTarget;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -26,7 +26,7 @@ class ScanResultFiles {
     }
 
     List<Path> write(
-        final List<ScanResultSchema> results,
+        final List<ScanResult> results,
         final Path directory
     ) {
         createDirectory(directory);

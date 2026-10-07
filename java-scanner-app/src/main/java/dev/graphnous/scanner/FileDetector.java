@@ -1,8 +1,8 @@
 package dev.graphnous.scanner;
 
-import dev.graphnous.scanner.model.File;
-import dev.graphnous.scanner.model.ScanTarget;
-import dev.graphnous.scanner.model.Module;
+import dev.graphnous.core.model.File;
+import dev.graphnous.core.model.ScanTarget;
+import dev.graphnous.core.model.Module;
 
 import java.nio.file.Path;
 import java.util.List;

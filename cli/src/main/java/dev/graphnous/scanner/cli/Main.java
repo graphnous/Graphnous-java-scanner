@@ -6,18 +6,13 @@ import dev.graphnous.scanner.docker.DockerSandbox;
 import dev.graphnous.scanner.GraphnousScanner;
 import dev.graphnous.scanner.ScanReport;
 import dev.graphnous.scanner.ScanResultWriter;
-import dev.graphnous.scanner.java.JavaScannerDefinition;
 import dev.graphnous.scanner.executor.DefaultScanExecutor;
 import dev.graphnous.scanner.java.language.JavaVersionDetector;
 import dev.graphnous.scanner.plan.DefaultScanPlanner;
-import dev.graphnous.scanner.sandbox.FileSystemScanSandbox;
-import dev.graphnous.scanner.sandbox.ScanSandbox;
 import dev.graphnous.scanner.java.targetdetector.MavenScanTargetDetector;
-import dev.graphnous.scanner.typescript.TypescriptScannerDefinition;
 import dev.graphnous.scanner.typescript.language.NodeVersionDetector;
 import dev.graphnous.scanner.typescript.targetdetector.NpmTargetDetector;
 
-import java.nio.file.Path;
 import java.util.List;
 
 public final class Main {
@@ -42,7 +37,7 @@ public final class Main {
         final CliOptions options;
 
         try {
-            options = CliOptions.parse(args, defaultScannersDirectory());
+            options = CliOptions.parse(args);
         } catch (CliOptions.UsageException e) {
             System.err.println("Error: " + e.getMessage());
             System.err.println();
@@ -70,16 +65,18 @@ public final class Main {
             ),
             List.of(
                 new JavaVersionDetector(),
-                new NodeVersionDetector(objectMapper, TypescriptScannerDefinition.DEFAULT_NODE_VERSION)
+                new NodeVersionDetector(objectMapper, NodeVersionDetector.DEFAULT_NODE_VERSION)
             )
         );
 
         final var executor = new DefaultScanExecutor(
-            List.of(
-                new JavaScannerDefinition(options.javaScanner(), options.verbose()),
-                new TypescriptScannerDefinition(options.typescriptScanner())
+            Scanners.of(options),
+            new DockerSandbox(
+                connectToDocker(),
+                options.dockerWorkspace(),
+                objectMapper,
+                reporter
             ),
-            sandbox(options, objectMapper, reporter),
             List.of(reporter)
         );
 
@@ -89,7 +86,7 @@ public final class Main {
             List.of(reporter)
         );
 
-        System.out.println("Scanning " + options.repository() + " (sandbox: " + options.sandbox().name().toLowerCase() + ")");
+        System.out.println("Scanning " + options.repository());
 
         final var report = scanner.scan(options.repository());
 
@@ -115,22 +112,6 @@ public final class Main {
         return report;
     }
 
-    private static ScanSandbox sandbox(
-        final CliOptions options,
-        final ObjectMapper objectMapper,
-        final ConsoleReporter reporter
-    ) {
-        return switch (options.sandbox()) {
-            case PROCESS -> new FileSystemScanSandbox(objectMapper, reporter);
-            case DOCKER -> new DockerSandbox(
-                connectToDocker(),
-                options.dockerWorkspace(),
-                objectMapper,
-                reporter
-            );
-        };
-    }
-
     private static DockerClient connectToDocker() {
         final var docker = DockerSandbox.defaultClient();
 
@@ -144,21 +125,5 @@ public final class Main {
         }
 
         return docker;
-    }
-
-    /**
-     * The {@code scanners} directory next to the CLI jar, or next to the
-     * classes directory when running from the build output.
-     */
-    static Path defaultScannersDirectory() {
-        try {
-            final var location = Path.of(
-                Main.class.getProtectionDomain().getCodeSource().getLocation().toURI()
-            );
-
-            return location.getParent().resolve("scanners");
-        } catch (Exception e) {
-            return Path.of("scanners");
-        }
     }
 }

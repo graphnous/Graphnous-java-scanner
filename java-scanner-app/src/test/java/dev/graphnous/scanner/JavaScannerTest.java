@@ -1,11 +1,11 @@
 package dev.graphnous.scanner;
 
-import dev.graphnous.scanner.model.Annotation;
-import dev.graphnous.scanner.model.Class;
-import dev.graphnous.scanner.model.File;
-import dev.graphnous.scanner.model.Method;
-import dev.graphnous.scanner.model.Module;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.Annotation;
+import dev.graphnous.core.model.Class;
+import dev.graphnous.core.model.File;
+import dev.graphnous.core.model.Method;
+import dev.graphnous.core.model.Module;
+import dev.graphnous.core.model.ScanTarget;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

@@ -16,8 +16,8 @@ import com.github.javaparser.ast.expr.SingleMemberAnnotationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.expr.TextBlockLiteralExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
-import dev.graphnous.scanner.model.Annotation;
-import dev.graphnous.scanner.model.Arguments;
+import dev.graphnous.core.model.Annotation;
+import dev.graphnous.core.model.Arguments;
 
 import java.util.List;
 

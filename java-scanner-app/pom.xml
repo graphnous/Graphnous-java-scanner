@@ -20,6 +20,10 @@
     <dependencies>
         <dependency>
             <groupId>dev.graphnous</groupId>
+            <artifactId>graphnous-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.graphnous</groupId>
             <artifactId>graphnous-scanner-core</artifactId>
         </dependency>
         <dependency>

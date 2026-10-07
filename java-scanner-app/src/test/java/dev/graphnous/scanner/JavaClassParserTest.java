@@ -1,13 +1,16 @@
 package dev.graphnous.scanner;
 
 import com.github.javaparser.ParserConfiguration;
-import dev.graphnous.scanner.model.Annotation;
-import dev.graphnous.scanner.model.Class;
-import dev.graphnous.scanner.model.Field;
-import dev.graphnous.scanner.model.File;
-import dev.graphnous.scanner.model.Method;
-import dev.graphnous.scanner.model.Modifier;
-import dev.graphnous.scanner.model.Parameter;
+import dev.graphnous.core.model.Annotation;
+import dev.graphnous.core.model.Class;
+import dev.graphnous.core.model.EnumConstant;
+import dev.graphnous.core.model.Field;
+import dev.graphnous.core.model.File;
+import dev.graphnous.core.model.Method;
+import dev.graphnous.core.model.Modifier;
+import dev.graphnous.core.model.Parameter;
+import dev.graphnous.core.model.RecordComponent;
+import dev.graphnous.core.model.TypeRef;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +19,8 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,7 +50,7 @@ class JavaClassParserTest {
             @interface Audited { }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .extracting(Class::getName, Class::getQualifiedName, Class::getKind)
             .containsExactlyInAnyOrder(
                 tuple("Service", "com.example.Service", Class.Kind.CLASS),
@@ -70,7 +75,7 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .extracting(Class::getQualifiedName)
             .containsExactlyInAnyOrder(
                 "com.example.Outer",
@@ -78,6 +83,21 @@ class JavaClassParserTest {
                 "com.example.Outer.Inner.Deepest",
                 "com.example.Outer.Value"
             );
+
+        assertThat(file.getClasses())
+            .singleElement()
+            .satisfies(outer -> {
+                assertThat(outer.getNesting()).isEqualTo(Class.Nesting.TOP_LEVEL);
+                assertThat(outer.getClasses())
+                    .extracting(Class::getQualifiedName, Class::getNesting)
+                    .containsExactly(
+                        tuple("com.example.Outer.Inner", Class.Nesting.MEMBER),
+                        tuple("com.example.Outer.Value", Class.Nesting.MEMBER)
+                    );
+                assertThat(outer.getClasses().getFirst().getClasses())
+                    .extracting(Class::getQualifiedName)
+                    .containsExactly("com.example.Outer.Inner.Deepest");
+            });
     }
 
     @Test
@@ -86,7 +106,7 @@ class JavaClassParserTest {
             class Script { }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .extracting(Class::getQualifiedName)
             .containsExactly("Script");
     }
@@ -97,7 +117,7 @@ class JavaClassParserTest {
             package com.example;
             """);
 
-        assertThat(file.getClasses()).isEmpty();
+        assertThat(allClasses(file)).isEmpty();
     }
 
     @Test
@@ -141,7 +161,7 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .extracting(Class::getName)
             .containsExactlyInAnyOrder("Shape", "Circle", "Square", "Areas");
     }
@@ -165,7 +185,7 @@ class JavaClassParserTest {
         final var file = new File();
         new JavaClassParser(ParserConfiguration.LanguageLevel.JAVA_17).parse(source, file);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .extracting(Class::getKind)
             .containsExactly(Class.Kind.RECORD);
     }
@@ -197,12 +217,12 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Orders"))
             .singleElement()
             .satisfies(orders -> {
                 assertThat(orders.getMethods())
-                    .extracting(Method::getName, Method::getQualifiedName, Method::getReturnType)
+                    .extracting(Method::getName, Method::getQualifiedName, method -> name(method.getReturnType()))
                     .containsExactly(
                         tuple("find", "com.example.Orders.find(java.lang.String, int)", "com.example.Order"),
                         tuple("save", "com.example.Orders.save(java.util.List<com.example.Order>, java.lang.String...)", "void"),
@@ -210,7 +230,7 @@ class JavaClassParserTest {
                     );
 
                 assertThat(orders.getMethods().get(1).getParameters())
-                    .extracting(Parameter::getName, Parameter::getType, Parameter::getQualifiedName)
+                    .extracting(Parameter::getName, parameter -> name(parameter.getType()), Parameter::getQualifiedName)
                     .containsExactly(
                         tuple("orders", "java.util.List<com.example.Order>",
                             "com.example.Orders.save(java.util.List<com.example.Order>, java.lang.String...).orders"),
@@ -241,7 +261,7 @@ class JavaClassParserTest {
             """);
 
         assertThat(file.getClasses().getFirst().getMethods().getFirst().getParameters())
-            .extracting(Parameter::getType)
+            .extracting(parameter -> parameter.getType().getName())
             .containsExactly(
                 "java.util.Map<java.lang.String,java.util.List<com.example.Order>>",
                 "java.util.Map.Entry<java.lang.String,java.lang.Integer>",
@@ -266,7 +286,7 @@ class JavaClassParserTest {
             """);
 
         assertThat(file.getClasses().getFirst().getMethods())
-            .extracting(Method::getQualifiedName, Method::getReturnType)
+            .extracting(Method::getQualifiedName, method -> name(method.getReturnType()))
             .containsExactly(
                 tuple("com.example.Repository.max(java.util.List<T>, E[])", "T"),
                 tuple("com.example.Repository.save(E)", "void")
@@ -431,17 +451,17 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Order"))
             .flatExtracting(Class::getMethods)
-            .extracting(Method::getName, Method::getQualifiedName, Method::getReturnType)
+            .extracting(Method::getName, Method::getQualifiedName, method -> name(method.getReturnType()))
             .containsExactly(
                 tuple("Order", "com.example.Order.Order()", null),
                 tuple("Order", "com.example.Order.Order(java.lang.String, java.util.List<com.example.Order.Line>)", null),
                 tuple("cancel", "com.example.Order.cancel()", "void")
             );
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Line"))
             .flatExtracting(Class::getMethods)
             .isEmpty();
@@ -462,7 +482,7 @@ class JavaClassParserTest {
             """);
 
         assertThat(file.getClasses().getFirst().getMethods())
-            .extracting(Method::getQualifiedName, Method::getReturnType)
+            .extracting(Method::getQualifiedName, method -> name(method.getReturnType()))
             .containsExactly(
                 tuple("com.example.Order.Order(java.lang.String, int)", null),
                 tuple("com.example.Order.Order(java.lang.String)", null)
@@ -480,7 +500,7 @@ class JavaClassParserTest {
             """);
 
         assertThat(file.getClasses().getFirst().getMethods())
-            .extracting(Method::getQualifiedName, Method::getReturnType)
+            .extracting(Method::getQualifiedName, method -> name(method.getReturnType()))
             .containsExactly(tuple("com.example.Audited.value()", "java.lang.String"));
     }
 
@@ -502,11 +522,11 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Order"))
             .singleElement()
             .satisfies(order -> assertThat(order.getFields())
-                .extracting(Field::getName, Field::getQualifiedName, Field::getType)
+                .extracting(Field::getName, Field::getQualifiedName, field -> name(field.getType()))
                 .containsExactly(
                     tuple("id", "com.example.Order.id", "java.lang.String"),
                     tuple("quantity", "com.example.Order.quantity", "int"),
@@ -514,7 +534,7 @@ class JavaClassParserTest {
                     tuple("TAGS", "com.example.Order.TAGS", "java.util.List<java.lang.String>")
                 ));
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Line"))
             .singleElement()
             .satisfies(line -> assertThat(line.getFields())
@@ -523,7 +543,7 @@ class JavaClassParserTest {
     }
 
     @Test
-    void detectsRecordComponentsAndEnumConstantsAsFields() throws IOException {
+    void detectsRecordComponentsAndEnumConstants() throws IOException {
         final var file = parse("""
             package com.example;
 
@@ -534,23 +554,60 @@ class JavaClassParserTest {
             enum Status { OPEN, CLOSED }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Order"))
-            .flatExtracting(Class::getFields)
-            .extracting(Field::getName, Field::getType)
-            .containsExactly(
-                tuple("id", "java.lang.String"),
-                tuple("quantity", "int"),
-                tuple("MAX", "int")
-            );
+            .singleElement()
+            .satisfies(order -> {
+                assertThat(order.getRecordComponents())
+                    .extracting(RecordComponent::getName, component -> name(component.getType()))
+                    .containsExactly(
+                        tuple("id", "java.lang.String"),
+                        tuple("quantity", "int")
+                    );
+                assertThat(order.getFields())
+                    .extracting(Field::getName, field -> name(field.getType()))
+                    .containsExactly(tuple("MAX", "int"));
+            });
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .filteredOn(clazz -> clazz.getName().equals("Status"))
-            .flatExtracting(Class::getFields)
-            .extracting(Field::getQualifiedName, Field::getType)
+            .singleElement()
+            .satisfies(status -> {
+                assertThat(status.getEnumConstants())
+                    .extracting(EnumConstant::getName, EnumConstant::getQualifiedName)
+                    .containsExactly(
+                        tuple("OPEN", "com.example.Status.OPEN"),
+                        tuple("CLOSED", "com.example.Status.CLOSED")
+                    );
+                assertThat(status.getFields()).isEmpty();
+            });
+    }
+
+    @Test
+    void listsTheClassesEachTypeRefersTo() throws IOException {
+        final var file = parse("""
+            package com.example;
+
+            import java.util.List;
+            import java.util.Map;
+
+            class Orders<T> {
+                Map<String, List<? extends Order>>[] byCustomer;
+                int count;
+                T current;
+                Map.Entry<String, T> last;
+            }
+
+            record Order(String id) { }
+            """);
+
+        assertThat(allClasses(file).getFirst().getFields())
+            .extracting(Field::getName, field -> field.getType().getReferences())
             .containsExactly(
-                tuple("com.example.Status.OPEN", "com.example.Status"),
-                tuple("com.example.Status.CLOSED", "com.example.Status")
+                tuple("byCustomer", Set.of("java.util.Map", "java.lang.String", "java.util.List", "com.example.Order")),
+                tuple("count", Set.of()),
+                tuple("current", Set.of()),
+                tuple("last", Set.of("java.util.Map.Entry", "java.lang.String"))
             );
     }
 
@@ -610,11 +667,15 @@ class JavaClassParserTest {
             enum Status { @Deprecated OPEN, CLOSED }
             """);
 
-        assertThat(file.getClasses())
-            .flatExtracting(Class::getFields)
-            .extracting(field -> field.getAnnotations().stream().map(Annotation::getQualifiedName).toList())
+        assertThat(allClasses(file))
+            .flatExtracting(Class::getRecordComponents)
+            .extracting(component -> component.getAnnotations().stream().map(Annotation::getQualifiedName).toList())
+            .containsExactly(List.of("com.example.NotNull"));
+
+        assertThat(allClasses(file))
+            .flatExtracting(Class::getEnumConstants)
+            .extracting(constant -> constant.getAnnotations().stream().map(Annotation::getQualifiedName).toList())
             .containsExactly(
-                List.of("com.example.NotNull"),
                 List.of("java.lang.Deprecated"),
                 List.of()
             );
@@ -700,16 +761,16 @@ class JavaClassParserTest {
             @interface Audited { }
             """);
 
-        assertThat(file.getClasses())
-            .extracting(Class::getName, Class::getSuperClass, Class::getInterfaces)
+        assertThat(allClasses(file))
+            .extracting(Class::getName, clazz -> names(clazz.getSuperClasses()), clazz -> names(clazz.getInterfaces()))
             .containsExactly(
-                tuple("Orders", "java.util.AbstractList<com.example.Order>",
+                tuple("Orders", List.of("java.util.AbstractList<com.example.Order>"),
                     List.of("java.io.Serializable", "java.util.function.Supplier<com.example.Order>")),
-                tuple("Plain", null, List.of()),
-                tuple("Repository", null, List.of("java.util.function.Supplier<T>", "java.lang.AutoCloseable")),
-                tuple("Order", null, List.of("java.lang.Comparable<com.example.Order>")),
-                tuple("Status", null, List.of("java.util.function.Supplier<java.lang.String>")),
-                tuple("Audited", null, List.of())
+                tuple("Plain", List.of(), List.of()),
+                tuple("Repository", List.of(), List.of("java.util.function.Supplier<T>", "java.lang.AutoCloseable")),
+                tuple("Order", List.of(), List.of("java.lang.Comparable<com.example.Order>")),
+                tuple("Status", List.of(), List.of("java.util.function.Supplier<java.lang.String>")),
+                tuple("Audited", List.of(), List.of())
             );
     }
 
@@ -787,7 +848,7 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .flatExtracting(Class::getMethods)
             .extracting(Method::getQualifiedName, Method::getKind)
             .containsExactly(
@@ -881,7 +942,7 @@ class JavaClassParserTest {
             }
             """);
 
-        assertThat(file.getClasses())
+        assertThat(allClasses(file))
             .extracting(Class::getQualifiedName)
             .containsExactly("com.example.Outer", "com.example.Outer.Mode");
     }
@@ -920,5 +981,24 @@ class JavaClassParserTest {
         parser.parse(path, file);
 
         return file;
+    }
+
+    /**
+     * The classes of the file and the classes nested in them, depth first.
+     */
+    private static List<Class> allClasses(final File file) {
+        return file.getClasses().stream().flatMap(JavaClassParserTest::withNested).toList();
+    }
+
+    private static Stream<Class> withNested(final Class clazz) {
+        return Stream.concat(Stream.of(clazz), clazz.getClasses().stream().flatMap(JavaClassParserTest::withNested));
+    }
+
+    private static String name(final TypeRef type) {
+        return type == null ? null : type.getName();
+    }
+
+    private static List<String> names(final List<TypeRef> types) {
+        return types.stream().map(TypeRef::getName).toList();
     }
 }

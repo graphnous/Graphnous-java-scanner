@@ -20,15 +20,10 @@ class CliOptionsTest {
     Path directory;
 
     private Path repository;
-    private Path scanners;
 
     @BeforeEach
     void setUp() throws IOException {
         repository = Files.createDirectories(directory.resolve("repo"));
-        scanners = Files.createDirectories(directory.resolve("scanners"));
-
-        Files.writeString(scanners.resolve("java-scanner.jar"), "");
-        Files.writeString(scanners.resolve("scanner.js"), "");
     }
 
     @Test
@@ -37,38 +32,31 @@ class CliOptionsTest {
 
         assertThat(options.repository()).isEqualTo(repository);
         assertThat(options.output()).isEqualTo(Path.of("scan-results").toAbsolutePath());
-        assertThat(options.sandbox()).isEqualTo(CliOptions.Sandbox.PROCESS);
         assertThat(options.dockerWorkspace()).isEqualTo(DockerWorkspace.hostDirectory());
         assertThat(options.verbose()).isFalse();
-        assertThat(options.javaScanner()).isEqualTo(scanners.resolve("java-scanner.jar"));
-        assertThat(options.typescriptScanner()).isEqualTo(scanners.resolve("scanner.js"));
+        assertThat(options.javaScannerImage()).isEqualTo(Scanners.JAVA_IMAGE);
+        assertThat(options.typescriptScannerImage()).isEqualTo(Scanners.TYPESCRIPT_IMAGE);
     }
 
     @Test
-    void readsAllOptions() throws IOException {
-        final var javaScanner = Files.writeString(directory.resolve("custom.jar"), "");
-        final var typescriptScanner = Files.writeString(directory.resolve("custom.js"), "");
-
+    void readsAllOptions() {
         final var options = parse(
             "--output", directory.resolve("out").toString(),
-            "--sandbox", "docker",
             repository.toString(),
-            "--java-scanner", javaScanner.toString(),
-            "--typescript-scanner", typescriptScanner.toString()
+            "--java-scanner-image", "registry.example.com/java-scanner:dev",
+            "--typescript-scanner-image", "registry.example.com/typescript-scanner:dev"
         );
 
         assertThat(options.repository()).isEqualTo(repository);
         assertThat(options.output()).isEqualTo(directory.resolve("out"));
-        assertThat(options.sandbox()).isEqualTo(CliOptions.Sandbox.DOCKER);
-        assertThat(options.javaScanner()).isEqualTo(javaScanner);
-        assertThat(options.typescriptScanner()).isEqualTo(typescriptScanner);
+        assertThat(options.javaScannerImage()).isEqualTo("registry.example.com/java-scanner:dev");
+        assertThat(options.typescriptScannerImage()).isEqualTo("registry.example.com/typescript-scanner:dev");
     }
 
     @Test
     void readsDockerVolume() {
         final var options = parse(
             repository.toString(),
-            "--sandbox", "docker",
             "--docker-volume", "checkouts:/checkouts"
         );
 
@@ -76,21 +64,12 @@ class CliOptionsTest {
             .isEqualTo(DockerWorkspace.volume("checkouts", Path.of("/checkouts")));
     }
 
-    @Test
-    void failsForDockerVolumeWithoutDockerSandbox() {
-        assertUsageError(
-            "--docker-volume requires --sandbox docker",
-            repository.toString(),
-            "--docker-volume", "checkouts:/checkouts"
-        );
-    }
-
     @ParameterizedTest
     @ValueSource(strings = {"checkouts", "checkouts:", ":/checkouts"})
     void failsForMalformedDockerVolume(final String volume) {
         assertUsageError(
             "Expected --docker-volume <name>:<path>",
-            repository.toString(), "--sandbox", "docker", "--docker-volume", volume
+            repository.toString(), "--docker-volume", volume
         );
     }
 
@@ -98,19 +77,13 @@ class CliOptionsTest {
     void failsForRelativeDockerVolumePath() {
         assertUsageError(
             "Volume mount path must be absolute",
-            repository.toString(), "--sandbox", "docker", "--docker-volume", "checkouts:relative"
+            repository.toString(), "--docker-volume", "checkouts:relative"
         );
     }
 
     @Test
     void readsVerbose() {
         assertThat(parse(repository.toString(), "--verbose").verbose()).isTrue();
-    }
-
-    @Test
-    void acceptsSandboxInAnyCase() {
-        assertThat(parse(repository.toString(), "--sandbox", "DOCKER").sandbox())
-            .isEqualTo(CliOptions.Sandbox.DOCKER);
     }
 
     @Test
@@ -153,15 +126,8 @@ class CliOptionsTest {
     }
 
     @Test
-    void failsForUnknownSandbox() {
-        assertUsageError("Unknown sandbox: vm", repository.toString(), "--sandbox", "vm");
-    }
-
-    @Test
-    void failsWhenAScannerIsMissing() throws IOException {
-        Files.delete(scanners.resolve("java-scanner.jar"));
-
-        assertUsageError("Scanner not found: " + scanners.resolve("java-scanner.jar"), repository.toString());
+    void failsForTheRemovedProcessSandbox() {
+        assertUsageError("Unknown option: --sandbox", repository.toString(), "--sandbox", "process");
     }
 
     @Test
@@ -172,7 +138,7 @@ class CliOptionsTest {
     }
 
     private CliOptions parse(final String... args) {
-        return CliOptions.parse(args, scanners);
+        return CliOptions.parse(args);
     }
 
     private void assertUsageError(final String message, final String... args) {

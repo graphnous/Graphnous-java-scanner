@@ -1,0 +1,41 @@
+# The Java scanner's tests, for its own repository, with the scanner at its
+# root.
+#
+# The scanner builds on the app's scanner modules (core, java, typescript
+# and docker) and on graphnous-core, which holds the scan result model.
+# They are published as public packages to GitHub Packages from
+# graphnous/graphnous-app. Its Maven registry needs a token even to read
+# public packages; the workflow's own GITHUB_TOKEN does.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Writes a settings.xml with a server for the github repository of the pom
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      # The tests, and the jars of the scanner app and the CLI
+      - run: mvn -B verify
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

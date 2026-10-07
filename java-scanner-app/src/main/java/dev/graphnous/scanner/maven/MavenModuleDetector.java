@@ -5,9 +5,9 @@ import dev.graphnous.scanner.ScanLog;
 import dev.graphnous.scanner.java.maven.MavenDependency;
 import dev.graphnous.scanner.java.maven.MavenPom;
 import dev.graphnous.scanner.java.maven.MavenPomFinder;
-import dev.graphnous.scanner.model.Dependency;
-import dev.graphnous.scanner.model.Module;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.Dependency;
+import dev.graphnous.core.model.Module;
+import dev.graphnous.core.model.ScanTarget;
 
 import java.nio.file.Path;
 import java.util.ArrayList;

@@ -3,10 +3,10 @@ package dev.graphnous.scanner;
 import dev.graphnous.scanner.java.maven.MavenWrapper;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
 import dev.graphnous.scanner.maven.MavenModuleDetector;
-import dev.graphnous.scanner.model.File;
-import dev.graphnous.scanner.model.Module;
-import dev.graphnous.scanner.model.ScanResultSchema;
-import dev.graphnous.scanner.model.ScanTarget;
+import dev.graphnous.core.model.File;
+import dev.graphnous.core.model.Module;
+import dev.graphnous.core.model.ScanResult;
+import dev.graphnous.core.model.ScanTarget;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -51,8 +51,8 @@ public class JavaScanner implements Scanner {
     }
 
     @Override
-    public ScanResultSchema scan(Path path, ScanTarget target) {
-        final var schema = new ScanResultSchema();
+    public ScanResult scan(Path path, ScanTarget target) {
+        final var schema = new ScanResult();
         schema.setTarget(target);
         schema.setVersion("2");
         schema.setFormat("graphnous-scan-result");

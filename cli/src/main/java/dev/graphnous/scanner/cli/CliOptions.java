@@ -4,40 +4,35 @@ import dev.graphnous.scanner.docker.DockerWorkspace;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Locale;
 
 public record CliOptions(
     Path repository,
     Path output,
-    Sandbox sandbox,
     DockerWorkspace dockerWorkspace,
-    Path javaScanner,
-    Path typescriptScanner,
+    String javaScannerImage,
+    String typescriptScannerImage,
     boolean verbose
 ) {
-
-    public enum Sandbox {
-        PROCESS,
-        DOCKER
-    }
 
     static final String USAGE = """
         Usage: graphnous-scanner <repository> [options]
 
         Scans the repository and writes one result file per detected project.
+        Each scanner runs in a Docker container of its image.
 
         Options:
           --output <dir>               Directory for the results (default: scan-results)
-          --sandbox <process|docker>   Where scanners run (default: process)
           --docker-volume <name>:<path>
-                                       With --sandbox docker: the repository is checked out in
-                                       this Docker volume, mounted here at <path>; scanner
-                                       containers get the volume at the same path
-          --java-scanner <jar>         Java scanner (default: scanners/java-scanner.jar next to the CLI)
-          --typescript-scanner <js>    TypeScript scanner (default: scanners/scanner.js next to the CLI)
+                                       The repository is checked out in this Docker volume,
+                                       mounted here at <path>; scanner containers get the
+                                       volume at the same path
+          --java-scanner-image <image>
+                                       Java scanner image (default: %s)
+          --typescript-scanner-image <image>
+                                       TypeScript scanner image (default: %s)
           --verbose                    Show every scanned file instead of one line per module
           --help                       Show this help
-        """;
+        """.formatted(Scanners.JAVA_IMAGE, Scanners.TYPESCRIPT_IMAGE);
 
     static final String DEFAULT_OUTPUT = "scan-results";
 
@@ -52,28 +47,22 @@ public record CliOptions(
     }
 
     /**
-     * @param scannersDirectory where the scanners are looked up by default
      * @throws UsageException when the arguments are invalid
      */
-    static CliOptions parse(
-        final String[] args,
-        final Path scannersDirectory
-    ) {
+    static CliOptions parse(final String[] args) {
         Path repository = null;
         var output = Path.of(DEFAULT_OUTPUT);
-        var sandbox = Sandbox.PROCESS;
         DockerWorkspace dockerVolume = null;
-        var javaScanner = scannersDirectory.resolve("java-scanner.jar");
-        var typescriptScanner = scannersDirectory.resolve("scanner.js");
+        var javaScannerImage = Scanners.JAVA_IMAGE;
+        var typescriptScannerImage = Scanners.TYPESCRIPT_IMAGE;
         var verbose = false;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--output" -> output = Path.of(value(args, ++i, "--output"));
-                case "--sandbox" -> sandbox = sandbox(value(args, ++i, "--sandbox"));
                 case "--docker-volume" -> dockerVolume = dockerVolume(value(args, ++i, "--docker-volume"));
-                case "--java-scanner" -> javaScanner = Path.of(value(args, ++i, "--java-scanner"));
-                case "--typescript-scanner" -> typescriptScanner = Path.of(value(args, ++i, "--typescript-scanner"));
+                case "--java-scanner-image" -> javaScannerImage = value(args, ++i, "--java-scanner-image");
+                case "--typescript-scanner-image" -> typescriptScannerImage = value(args, ++i, "--typescript-scanner-image");
                 case "--verbose" -> verbose = true;
                 default -> {
                     if (args[i].startsWith("-")) {
@@ -97,20 +86,12 @@ public record CliOptions(
             throw new UsageException("Repository is not a directory: " + repository);
         }
 
-        if (dockerVolume != null && sandbox != Sandbox.DOCKER) {
-            throw new UsageException("--docker-volume requires --sandbox docker");
-        }
-
-        requireScanner(javaScanner, "--java-scanner");
-        requireScanner(typescriptScanner, "--typescript-scanner");
-
         return new CliOptions(
             repository.toAbsolutePath().normalize(),
             output.toAbsolutePath().normalize(),
-            sandbox,
             dockerVolume == null ? DockerWorkspace.hostDirectory() : dockerVolume,
-            javaScanner.toAbsolutePath().normalize(),
-            typescriptScanner.toAbsolutePath().normalize(),
+            javaScannerImage,
+            typescriptScannerImage,
             verbose
         );
     }
@@ -127,14 +108,6 @@ public record CliOptions(
         return args[index];
     }
 
-    private static Sandbox sandbox(final String value) {
-        try {
-            return Sandbox.valueOf(value.toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            throw new UsageException("Unknown sandbox: " + value + " (expected process or docker)");
-        }
-    }
-
     private static DockerWorkspace dockerVolume(final String value) {
         final var separator = value.indexOf(':');
 
@@ -149,18 +122,6 @@ public record CliOptions(
             );
         } catch (IllegalArgumentException e) {
             throw new UsageException(e.getMessage());
-        }
-    }
-
-    private static void requireScanner(
-        final Path scanner,
-        final String option
-    ) {
-        if (!Files.isRegularFile(scanner)) {
-            throw new UsageException(
-                "Scanner not found: " + scanner
-                + " (build it with ./mvnw package, or pass " + option + ")"
-            );
         }
     }
 

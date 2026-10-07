@@ -10,14 +10,19 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
+    <!--
+        Scans a repository from the command line, with the scan planning and
+        execution the server uses. Runs each scanner in a Docker container of
+        its image, published by graphnous-java-scanner and
+        graphnous-typescript-scanner.
+    -->
     <artifactId>cli</artifactId>
 
-    <properties>
-        <!-- The CLI looks for its scanners in this directory next to its jar. -->
-        <scanners.directory>${project.build.directory}/scanners</scanners.directory>
-    </properties>
-
     <dependencies>
+        <dependency>
+            <groupId>dev.graphnous</groupId>
+            <artifactId>graphnous-core</artifactId>
+        </dependency>
         <dependency>
             <groupId>dev.graphnous</groupId>
             <artifactId>graphnous-scanner-core</artifactId>
@@ -50,62 +55,6 @@
         <finalName>graphnous-scanner</finalName>
 
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <id>copy-java-scanner</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>copy</goal>
-                        </goals>
-                        <configuration>
-                            <artifactItems>
-                                <artifactItem>
-                                    <groupId>dev.graphnous</groupId>
-                                    <artifactId>java-scanner-app</artifactId>
-                                    <version>${project.version}</version>
-                                    <destFileName>java-scanner.jar</destFileName>
-                                </artifactItem>
-                            </artifactItems>
-                            <outputDirectory>${scanners.directory}</outputDirectory>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-resources-plugin</artifactId>
-                <executions>
-                    <execution>
-                        <!--
-                            scanner.js is the bundled build of graphnous-typescript-scanner in
-                            this repository; build that first (npm run build) to include it.
-                            Without it the build still succeeds, but the CLI refuses to start
-                            unless its typescript-scanner option points to one.
-                        -->
-                        <id>copy-typescript-scanner</id>
-                        <phase>prepare-package</phase>
-                        <goals>
-                            <goal>copy-resources</goal>
-                        </goals>
-                        <configuration>
-                            <outputDirectory>${scanners.directory}</outputDirectory>
-                            <resources>
-                                <resource>
-                                    <directory>${project.basedir}/../../graphnous-typescript-scanner/build</directory>
-                                    <includes>
-                                        <include>scanner.js</include>
-                                    </includes>
-                                </resource>
-                            </resources>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
