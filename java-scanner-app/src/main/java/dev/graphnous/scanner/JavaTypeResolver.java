@@ -231,6 +231,17 @@ class JavaTypeResolver {
             .orElseGet(() -> qualify(packageName, name));
     }
 
+    /**
+     * Whether the name is a type parameter in scope at the context, e.g.
+     * {@code T}, rather than a class.
+     */
+    boolean isTypeVariable(
+        final String name,
+        final Node context
+    ) {
+        return !name.contains(".") && typeParameter(name, context).isPresent();
+    }
+
     private static Optional<TypeParameter> typeParameter(
         final String name,
         final Node context

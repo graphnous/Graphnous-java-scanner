@@ -18,12 +18,11 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!--
-            The scan result schema the scanner writes, from graphnous-schemas
-            at this commit. Override graphnous.schema.url with a local file
-            to build against another copy.
+            The scan result schema the scanner writes, as published by
+            graphnous-schemas on GitHub Pages. Override graphnous.schema.url
+            with a local file to build against another copy.
         -->
-        <graphnous.schema.version>c83b6d5d5ae5e92945ac3413c2385b8ae1ea88f0</graphnous.schema.version>
-        <graphnous.schema.url>https://raw.githubusercontent.com/graphnous/graphnous-schemas/${graphnous.schema.version}/scan/scan-result.schema.json</graphnous.schema.url>
+        <graphnous.schema.url>https://graphnous.github.io/graphnous-schemas/schema/scan/scan-result.schema.json</graphnous.schema.url>
 
         <jackson.version>2.22.2</jackson.version>
         <javaparser.version>3.28.2</javaparser.version>
@@ -51,6 +50,11 @@
             <dependency>
                 <groupId>com.github.javaparser</groupId>
                 <artifactId>javaparser-core</artifactId>
+                <version>${javaparser.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.github.javaparser</groupId>
+                <artifactId>javaparser-symbol-solver-core</artifactId>
                 <version>${javaparser.version}</version>
             </dependency>
         </dependencies>

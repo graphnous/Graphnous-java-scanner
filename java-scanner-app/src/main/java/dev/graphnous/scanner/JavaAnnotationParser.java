@@ -63,6 +63,8 @@ class JavaAnnotationParser {
             resolver.resolveName(expression.getNameAsString(), expression)
         );
 
+        JavaLocations.locate(expression, annotation);
+
         switch (expression) {
             case SingleMemberAnnotationExpr single -> {
                 final var arguments = new Arguments();
@@ -83,7 +85,11 @@ class JavaAnnotationParser {
         return annotation;
     }
 
-    private Object value(final Expression expression) {
+    /**
+     * The value of an annotation argument, or of the default of an
+     * annotation element, as a JSON value.
+     */
+    Object value(final Expression expression) {
         return switch (expression) {
             case StringLiteralExpr string -> string.asString();
             case TextBlockLiteralExpr textBlock -> textBlock.asString();

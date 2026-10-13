@@ -3,6 +3,7 @@ package dev.graphnous.scanner;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.BodyDeclaration;
@@ -11,6 +12,7 @@ import com.github.javaparser.ast.nodeTypes.NodeWithImplements;
 import com.github.javaparser.ast.nodeTypes.NodeWithSimpleName;
 import com.github.javaparser.ast.nodeTypes.NodeWithTypeParameters;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.ast.type.ReferenceType;
 import com.github.javaparser.ast.type.TypeParameter;
 import com.github.javaparser.ast.body.AnnotationDeclaration;
 import com.github.javaparser.ast.body.AnnotationMemberDeclaration;
@@ -22,11 +24,13 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import dev.graphnous.scanner.model.Annotation;
 import dev.graphnous.scanner.model.Class;
 import dev.graphnous.scanner.model.EnumConstant;
 import dev.graphnous.scanner.model.Field;
 import dev.graphnous.scanner.model.File;
+import dev.graphnous.scanner.model.Import;
 import dev.graphnous.scanner.model.Method;
 import dev.graphnous.scanner.model.Modifier;
 import dev.graphnous.scanner.model.Parameter;
@@ -51,6 +55,8 @@ public class JavaClassParser {
      */
     private final ThreadLocal<JavaParser> parser;
 
+    private final ParserConfiguration.LanguageLevel languageLevel;
+
     public JavaClassParser() {
         this(ParserConfiguration.LanguageLevel.CURRENT);
     }
@@ -59,9 +65,12 @@ public class JavaClassParser {
      * @param languageLevel the Java version the sources are written for
      */
     public JavaClassParser(final ParserConfiguration.LanguageLevel languageLevel) {
-        this.parser = ThreadLocal.withInitial(() -> new JavaParser(
-            new ParserConfiguration().setLanguageLevel(languageLevel)
-        ));
+        this.languageLevel = languageLevel;
+        this.parser = ThreadLocal.withInitial(() -> new JavaParser(configuration()));
+    }
+
+    private ParserConfiguration configuration() {
+        return new ParserConfiguration().setLanguageLevel(languageLevel);
     }
 
     /**
@@ -78,7 +87,9 @@ public class JavaClassParser {
 
         return new JavaTypeIndex(
             files.stream().flatMap(file -> file.types().stream()).toList(),
-            files.stream().map(IndexedFile::packageName).filter(name -> !name.isEmpty()).toList()
+            files.stream().map(IndexedFile::packageName).filter(name -> !name.isEmpty()).toList(),
+            files.stream().map(IndexedFile::sourceRoot).flatMap(Optional::stream).toList(),
+            languageLevel
         );
     }
 
@@ -89,6 +100,7 @@ public class JavaClassParser {
 
             return Optional.of(new IndexedFile(
                 packageName(compilationUnit),
+                sourceRoot(sourcePath, packageName(compilationUnit)),
                 compilationUnit
                     .findAll(TypeDeclaration.class, JavaClassParser::isNamed)
                     .stream()
@@ -104,8 +116,36 @@ public class JavaClassParser {
 
     private record IndexedFile(
         String packageName,
+        Optional<Path> sourceRoot,
         List<String> types
     ) {
+    }
+
+    /**
+     * The directory the package of the file starts in, e.g.
+     * {@code src/main/java} for {@code src/main/java/com/example/Order.java}
+     * in package {@code com.example}; none when the directories of the file
+     * do not match its package.
+     */
+    private static Optional<Path> sourceRoot(
+        final Path sourcePath,
+        final String packageName
+    ) {
+        Path root = sourcePath.toAbsolutePath().normalize().getParent();
+
+        if (!packageName.isEmpty()) {
+            final var names = packageName.split("\\.");
+
+            for (int i = names.length - 1; i >= 0; i--) {
+                if (root == null || root.getFileName() == null || !root.getFileName().toString().equals(names[i])) {
+                    return Optional.empty();
+                }
+
+                root = root.getParent();
+            }
+        }
+
+        return Optional.ofNullable(root);
     }
 
     private static String packageName(final CompilationUnit compilationUnit) {
@@ -126,9 +166,9 @@ public class JavaClassParser {
     }
 
     /**
-     * Parses the source file and sets its package and its top-level
-     * classes, with their methods, fields, annotations and member classes,
-     * on {@code file}.
+     * Parses the source file and sets its package, its imports and its
+     * top-level classes, with their methods, fields, annotations and member
+     * classes, on {@code file}.
      *
      * @param index the types of the scan target, to resolve the types the
      *              file uses
@@ -142,14 +182,28 @@ public class JavaClassParser {
     ) {
         final CompilationUnit compilationUnit = parseSource(sourcePath);
 
+        // Resolves the methods and fields the method bodies use
+        new JavaSymbolSolver(index.typeSolver()).inject(compilationUnit);
+
         final var resolver = new JavaTypeResolver(compilationUnit, index);
         final var annotations = new JavaAnnotationParser(resolver);
+        final var bodies = new JavaBodyParser(resolver, index);
         final var packageName = packageName(compilationUnit);
+
+        file.setImports(
+            compilationUnit.getImports()
+                .stream()
+                // Module imports, as in import module java.base, name no
+                // type or package
+                .filter(declaration -> !declaration.isModule())
+                .map(JavaClassParser::toImport)
+                .collect(Collectors.toCollection(ArrayList::new))
+        );
 
         file.setClasses(
             compilationUnit.getTypes()
                 .stream()
-                .map(declaration -> toClass(resolver, annotations, declaration))
+                .map(declaration -> toClass(resolver, annotations, bodies, declaration))
                 .collect(Collectors.toCollection(ArrayList::new))
         );
 
@@ -165,7 +219,7 @@ public class JavaClassParser {
      * of an enum constant have none and cannot be used outside it, so
      * they are left out.
      */
-    private static boolean isNamed(final TypeDeclaration<?> declaration) {
+    static boolean isNamed(final TypeDeclaration<?> declaration) {
         Node current = declaration;
 
         while (current.getParentNode().orElse(null) instanceof TypeDeclaration<?> parent) {
@@ -193,9 +247,22 @@ public class JavaClassParser {
         }
     }
 
+    private static Import toImport(final ImportDeclaration declaration) {
+        final var anImport = new Import();
+
+        anImport.setName(declaration.getNameAsString());
+        anImport.setStatic(declaration.isStatic());
+        anImport.setWildcard(declaration.isAsterisk());
+
+        JavaLocations.locate(declaration, anImport);
+
+        return anImport;
+    }
+
     private Class toClass(
         final JavaTypeResolver resolver,
         final JavaAnnotationParser annotations,
+        final JavaBodyParser bodies,
         final TypeDeclaration<?> declaration
     ) {
         final var clazz = new Class();
@@ -207,6 +274,8 @@ public class JavaClassParser {
         clazz.setQualifiedName(
             resolver.qualifiedName(declaration)
         );
+
+        JavaLocations.locate(declaration, clazz);
 
         clazz.setKind(
             kind(declaration)
@@ -225,7 +294,7 @@ public class JavaClassParser {
         supertypes(resolver, clazz, declaration);
 
         clazz.setMethods(
-            methods(resolver, annotations, clazz, declaration)
+            methods(resolver, annotations, bodies, clazz, declaration)
         );
 
         clazz.setFields(
@@ -255,7 +324,7 @@ public class JavaClassParser {
                 .stream()
                 .filter(TypeDeclaration.class::isInstance)
                 .map(member -> {
-                    final var nested = toClass(resolver, annotations, (TypeDeclaration<?>) member);
+                    final var nested = toClass(resolver, annotations, bodies, (TypeDeclaration<?>) member);
                     nested.setNesting(Class.Nesting.MEMBER);
                     return nested;
                 })
@@ -352,6 +421,7 @@ public class JavaClassParser {
     private static List<Method> methods(
         final JavaTypeResolver resolver,
         final JavaAnnotationParser annotations,
+        final JavaBodyParser bodies,
         final Class clazz,
         final TypeDeclaration<?> declaration
     ) {
@@ -363,11 +433,13 @@ public class JavaClassParser {
                 methods.add(method(
                     resolver,
                     annotations,
+                    bodies,
                     clazz,
                     callable,
                     callable.getModifiers(),
                     callable.getTypeParameters(),
-                    callable.getParameters()
+                    callable.getParameters(),
+                    callable.getThrownExceptions()
                 ));
             } else if (member instanceof CompactConstructorDeclaration constructor
                 && declaration instanceof RecordDeclaration record) {
@@ -376,19 +448,23 @@ public class JavaClassParser {
                 methods.add(method(
                     resolver,
                     annotations,
+                    bodies,
                     clazz,
                     constructor,
                     constructor.getModifiers(),
                     constructor.getTypeParameters(),
-                    record.getParameters()
+                    record.getParameters(),
+                    constructor.getThrownExceptions()
                 ));
             } else if (member instanceof AnnotationMemberDeclaration element) {
                 methods.add(method(
                     resolver,
                     annotations,
+                    bodies,
                     clazz,
                     element,
                     element.getModifiers(),
+                    new NodeList<>(),
                     new NodeList<>(),
                     new NodeList<>()
                 ));
@@ -399,18 +475,19 @@ public class JavaClassParser {
     }
 
     /**
-     * The qualified name includes the qualified parameter types, so that
-     * overloads of a method each get their own name, e.g.
-     * {@code com.example.Orders.find(java.lang.String, java.util.List<com.example.Order>)}.
+     * The method with its signature, named as in {@link #qualifiedName},
+     * and what its body uses; see {@link JavaBodyParser}.
      */
     private static Method method(
         final JavaTypeResolver resolver,
         final JavaAnnotationParser annotations,
+        final JavaBodyParser bodies,
         final Class clazz,
         final BodyDeclaration<?> declaration,
         final NodeList<com.github.javaparser.ast.Modifier> modifiers,
         final NodeList<TypeParameter> typeParameters,
-        final NodeList<com.github.javaparser.ast.body.Parameter> parameterDeclarations
+        final NodeList<com.github.javaparser.ast.body.Parameter> parameterDeclarations,
+        final NodeList<ReferenceType> thrownExceptions
     ) {
         final var method = new Method();
         final var name = ((NodeWithSimpleName<?>) declaration).getNameAsString();
@@ -422,11 +499,10 @@ public class JavaClassParser {
         method.setName(name);
 
         method.setQualifiedName(
-            clazz.getQualifiedName() + "." + name
-            + parameters.stream()
-                .map(parameter -> parameter.getType().getName())
-                .collect(Collectors.joining(", ", "(", ")"))
+            qualifiedName(resolver, clazz.getQualifiedName(), name, parameterDeclarations)
         );
+
+        JavaLocations.locate(declaration, method);
 
         final var isConstructor = declaration instanceof ConstructorDeclaration
             || declaration instanceof CompactConstructorDeclaration;
@@ -435,11 +511,19 @@ public class JavaClassParser {
         method.setModifiers(modifiers(modifiers));
         method.setTypeParameters(typeParameters(resolver, typeParameters));
 
+        method.setThrows(
+            thrownExceptions.stream()
+                .map(type -> resolver.typeRef(type, declaration))
+                .collect(Collectors.toCollection(ArrayList::new))
+        );
+
         switch (declaration) {
             case MethodDeclaration methodDeclaration ->
                 method.setReturnType(resolver.typeRef(methodDeclaration.getType(), methodDeclaration));
-            case AnnotationMemberDeclaration element ->
+            case AnnotationMemberDeclaration element -> {
                 method.setReturnType(resolver.typeRef(element.getType(), element));
+                element.getDefaultValue().map(annotations::value).ifPresent(method::setDefaultValue);
+            }
             default -> {
             }
         }
@@ -451,7 +535,32 @@ public class JavaClassParser {
         method.setParameters(new ArrayList<>(parameters));
         method.setAnnotations(new ArrayList<>(annotations.annotations(declaration.getAnnotations())));
 
+        switch (declaration) {
+            case MethodDeclaration methodDeclaration -> methodDeclaration.getBody().ifPresent(body -> bodies.parse(body, method));
+            case ConstructorDeclaration constructor -> bodies.parse(constructor.getBody(), method);
+            case CompactConstructorDeclaration constructor -> bodies.parse(constructor.getBody(), method);
+            default -> {
+            }
+        }
+
         return method;
+    }
+
+    /**
+     * The qualified name of a method or constructor of the type: the
+     * qualified parameter types make each overload a name of its own, e.g.
+     * {@code com.example.Orders.find(java.lang.String, java.util.List<com.example.Order>)}.
+     */
+    static String qualifiedName(
+        final JavaTypeResolver resolver,
+        final String typeName,
+        final String name,
+        final NodeList<com.github.javaparser.ast.body.Parameter> parameters
+    ) {
+        return typeName + "." + name
+            + parameters.stream()
+                .map(parameter -> resolver.resolve(parameter.getType(), parameter) + (parameter.isVarArgs() ? "..." : ""))
+                .collect(Collectors.joining(", ", "(", ")"));
     }
 
     /**
@@ -469,6 +578,8 @@ public class JavaClassParser {
         parameter.setName(
             declaration.getNameAsString()
         );
+
+        JavaLocations.locate(declaration, parameter);
 
         parameter.setType(
             resolver.typeRef(declaration.getType(), declaration, declaration.isVarArgs() ? "..." : "")
@@ -495,6 +606,7 @@ public class JavaClassParser {
                 final var constant = new EnumConstant();
 
                 constant.setName(declaration.getNameAsString());
+                JavaLocations.locate(declaration, constant);
                 constant.setQualifiedName(clazz.getQualifiedName() + "." + declaration.getNameAsString());
                 constant.setAnnotations(new ArrayList<>(annotations.annotations(declaration.getAnnotations())));
 
@@ -517,6 +629,7 @@ public class JavaClassParser {
                 final var component = new RecordComponent();
 
                 component.setName(declaration.getNameAsString());
+                JavaLocations.locate(declaration, component);
                 component.setType(resolver.typeRef(declaration.getType(), declaration));
                 component.setAnnotations(new ArrayList<>(annotations.annotations(declaration.getAnnotations())));
 
@@ -543,13 +656,20 @@ public class JavaClassParser {
             if (member instanceof FieldDeclaration field) {
                 // The type of the variable includes brackets written after
                 // its name, as in int values[]
-                field.getVariables().forEach(variable -> fields.add(field(
-                    clazz,
-                    variable.getNameAsString(),
-                    resolver.typeRef(variable.getType(), variable),
-                    modifiers(field.getModifiers()),
-                    annotations.annotations(field.getAnnotations())
-                )));
+                // Each variable is located at the whole declaration, which
+                // holds the annotations and modifiers they share
+                field.getVariables().forEach(variable -> {
+                    final var element = field(
+                        clazz,
+                        variable.getNameAsString(),
+                        resolver.typeRef(variable.getType(), variable),
+                        modifiers(field.getModifiers()),
+                        annotations.annotations(field.getAnnotations())
+                    );
+
+                    JavaLocations.locate(field, element);
+                    fields.add(element);
+                });
             }
         });
 

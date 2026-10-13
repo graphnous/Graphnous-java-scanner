@@ -27,6 +27,11 @@
             <artifactId>javaparser-core</artifactId>
         </dependency>
         <dependency>
+            <!-- Resolves the methods and fields that method bodies use -->
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-symbol-solver-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
