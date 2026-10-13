@@ -1,6 +1,6 @@
 # Builds and tests the Java scanner, and builds its image. Its scan result
-# model is generated from the scan result schema at the graphnous-schemas
-# commit the pom pins (graphnous.schema.version).
+# model is generated from the scan result schema graphnous-schemas publishes
+# on GitHub Pages (graphnous.schema.url in the pom).
 
 name: CI
 
