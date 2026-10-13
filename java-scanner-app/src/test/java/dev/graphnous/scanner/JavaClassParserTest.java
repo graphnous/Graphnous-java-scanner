@@ -6,6 +6,7 @@ import dev.graphnous.scanner.model.Class;
 import dev.graphnous.scanner.model.EnumConstant;
 import dev.graphnous.scanner.model.Field;
 import dev.graphnous.scanner.model.File;
+import dev.graphnous.scanner.model.Import;
 import dev.graphnous.scanner.model.Method;
 import dev.graphnous.scanner.model.Modifier;
 import dev.graphnous.scanner.model.Parameter;
@@ -964,6 +965,141 @@ class JavaClassParserTest {
         assertThat(index.containsType("com.example.Outer")).isTrue();
         assertThat(index.containsType("com.example.Point")).isFalse();
         assertThat(index.containsType("com.example.Outer.Point")).isFalse();
+    }
+
+    @Test
+    void detectsTheImportsOfTheFile() throws IOException {
+        final var file = parse("""
+            package com.example;
+
+            import java.util.List;
+            import java.util.concurrent.*;
+            import static java.util.Collections.emptyList;
+            import static java.util.Objects.*;
+
+            class Orders { }
+            """);
+
+        assertThat(file.getImports())
+            .extracting(Import::getName, Import::getStatic, Import::getWildcard, Import::getStartLine)
+            .containsExactly(
+                tuple("java.util.List", false, false, 3),
+                tuple("java.util.concurrent", false, true, 4),
+                tuple("java.util.Collections.emptyList", true, false, 5),
+                tuple("java.util.Objects", true, true, 6)
+            );
+    }
+
+    @Test
+    void locatesTheDeclarationsWithTheirAnnotationsButNotTheirJavadoc() throws IOException {
+        final var file = parse("""
+            package com.example;
+
+            /** An order. */
+            @Deprecated
+            public class Order {
+
+                @Deprecated
+                private String id,
+                    name;
+
+                Order(
+                    @Deprecated String id
+                ) {
+                    this.id = id;
+                }
+            }
+
+            enum Status { OPEN }
+
+            record Line(int quantity) { }
+            """);
+
+        final var order = file.getClasses().getFirst();
+
+        assertThat(order)
+            .extracting(Class::getStartLine, Class::getEndLine, Class::getStartColumn, Class::getEndColumn)
+            .containsExactly(4, 16, 1, 1);
+        assertThat(order.getAnnotations().getFirst())
+            .extracting(Annotation::getStartLine, Annotation::getEndLine, Annotation::getStartColumn, Annotation::getEndColumn)
+            .containsExactly(4, 4, 1, 11);
+
+        // Every variable of a field declaration is located at the declaration
+        assertThat(order.getFields())
+            .extracting(Field::getName, Field::getStartLine, Field::getEndLine, Field::getStartColumn, Field::getEndColumn)
+            .containsExactly(
+                tuple("id", 7, 9, 5, 13),
+                tuple("name", 7, 9, 5, 13)
+            );
+
+        final var constructor = order.getMethods().getFirst();
+
+        assertThat(constructor)
+            .extracting(Method::getStartLine, Method::getEndLine, Method::getStartColumn, Method::getEndColumn)
+            .containsExactly(11, 15, 5, 5);
+        assertThat(constructor.getParameters().getFirst())
+            .extracting(Parameter::getStartLine, Parameter::getEndLine, Parameter::getStartColumn, Parameter::getEndColumn)
+            .containsExactly(12, 12, 9, 29);
+
+        assertThat(file.getClasses().get(1).getEnumConstants().getFirst())
+            .extracting(EnumConstant::getStartLine, EnumConstant::getStartColumn, EnumConstant::getEndColumn)
+            .containsExactly(18, 15, 18);
+        assertThat(file.getClasses().get(2).getRecordComponents().getFirst())
+            .extracting(RecordComponent::getStartLine, RecordComponent::getStartColumn, RecordComponent::getEndColumn)
+            .containsExactly(20, 13, 24);
+    }
+
+    @Test
+    void detectsTheExceptionsMethodsAndConstructorsThrow() throws IOException {
+        final var file = parse("""
+            package com.example;
+
+            import java.io.IOException;
+
+            class Store {
+                Store() throws IOException { }
+
+                void save() throws IOException, StoreException { }
+
+                void clear() { }
+            }
+
+            class StoreException extends Exception { }
+            """);
+
+        assertThat(file.getClasses().getFirst().getMethods())
+            .extracting(Method::getName, method -> names(method.getThrows()))
+            .containsExactly(
+                tuple("Store", List.of("java.io.IOException")),
+                tuple("save", List.of("java.io.IOException", "com.example.StoreException")),
+                tuple("clear", List.of())
+            );
+    }
+
+    @Test
+    void detectsTheDefaultValuesOfAnnotationElements() throws IOException {
+        final var file = parse("""
+            package com.example;
+
+            @interface Audited {
+                String value() default "orders";
+
+                int[] levels() default {1, 2};
+
+                Class<?> type() default Object.class;
+
+                boolean enabled();
+            }
+            """);
+
+        assertThat(file.getClasses().getFirst().getMethods())
+            .extracting(Method::getName, Method::getDefaultValue)
+            .containsExactly(
+                tuple("value", "orders"),
+                tuple("levels", List.of(1, 2)),
+                tuple("type", "java.lang.Object.class"),
+                tuple("enabled", null)
+            );
     }
 
     private Path write(final String name, final String source) throws IOException {

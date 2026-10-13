@@ -298,6 +298,7 @@ public class JavaFileDetector implements FileDetector {
 
             file.setSize(content.length);
             file.setChecksum(sha256(content));
+            file.setLineCount(lineCount(content));
 
             packageName = classParser.parse(path, file, index);
         } catch (JavaParseException e) {
@@ -329,6 +330,25 @@ public class JavaFileDetector implements FileDetector {
         static Outcome skipped(final String warning) {
             return new Outcome(null, warning);
         }
+    }
+
+    /**
+     * The number of lines, ended by \n, \r\n or \r as in Java sources. A
+     * last line without a line terminator counts as well; an empty file has
+     * no lines.
+     */
+    static int lineCount(final byte[] content) {
+        int lines = 0;
+
+        for (int i = 0; i < content.length; i++) {
+            if (content[i] == '\n' || content[i] == '\r' && (i + 1 == content.length || content[i + 1] != '\n')) {
+                lines++;
+            }
+        }
+
+        final var last = content.length == 0 ? '\n' : content[content.length - 1];
+
+        return last == '\n' || last == '\r' ? lines : lines + 1;
     }
 
     /**

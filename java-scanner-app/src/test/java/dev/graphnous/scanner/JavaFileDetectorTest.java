@@ -386,6 +386,28 @@ class JavaFileDetectorTest {
             );
     }
 
+    @Test
+    void countsTheLinesOfAFile() {
+        assertThat(JavaFileDetector.lineCount(new byte[0])).isZero();
+        assertThat(JavaFileDetector.lineCount("class A { }".getBytes())).isEqualTo(1);
+        assertThat(JavaFileDetector.lineCount("class A {\n}\n".getBytes())).isEqualTo(2);
+        assertThat(JavaFileDetector.lineCount("class A {\r\n}".getBytes())).isEqualTo(2);
+        assertThat(JavaFileDetector.lineCount("a\rb\r\n\nc".getBytes())).isEqualTo(4);
+    }
+
+    @Test
+    void setsTheLineCountOfEachFile() throws IOException {
+        write("src/main/java/com/example/Service.java", """
+            package com.example;
+
+            public class Service { }
+            """);
+
+        assertThat(detector.detectFiles(repository, target("."), module(".")))
+            .extracting(File::getLineCount)
+            .containsExactly(3);
+    }
+
     private void write(final String path, final String content) throws IOException {
         final var file = repository.resolve(path);
         Files.createDirectories(file.getParent());
