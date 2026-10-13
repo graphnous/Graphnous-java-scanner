@@ -1,7 +1,7 @@
 package dev.graphnous.scanner.java.maven;
 
 import java.nio.file.Path;
-import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -18,7 +18,8 @@ import java.util.Set;
  * <p>
  * This is not Maven: a version the poms do not tell, e.g. because a
  * parent or BOM is missing, is taken to be the newest version in the
- * repository, and exclusions are not applied. The result is meant for
+ * repository, and exclusions are not applied. With a remote repository,
+ * the poms and jars are downloaded into the repository as they are needed. The result is meant for
  * resolving the types the sources use, for which a jar too many does no
  * harm.
  */
@@ -48,49 +49,81 @@ public final class MavenClasspath {
         }
 
         final var visited = new HashSet<>(skipped);
-        final var queue = new ArrayDeque<MavenDependency>();
-        final var jars = new LinkedHashSet<Path>();
+        final var artifacts = new ArrayList<List<String>>();
 
-        modules.forEach(module -> module.dependencies()
-            .stream()
+        var level = modules.stream()
+            .flatMap(module -> module.dependencies().stream())
             // Neither has a jar in the repository
             .filter(dependency -> !dependency.scope().equals("system") && !dependency.scope().equals("import"))
-            .forEach(queue::add));
+            .toList();
+        var direct = true;
 
-        final var depth = queue.size();
-        var polled = 0;
+        // Level by level, so the version nearest to the modules wins, and
+        // the poms of a level can be downloaded at once
+        while (!level.isEmpty() && visited.size() < MAX_ARTIFACTS) {
+            final var candidates = new ArrayList<MavenDependency>();
 
-        // Breadth first, so the version nearest to the modules wins
-        while (!queue.isEmpty() && visited.size() < MAX_ARTIFACTS) {
-            final var dependency = queue.poll();
-            final var direct = polled++ < depth;
-
-            if (!visited.add(dependency.groupId() + ":" + dependency.artifactId())) {
-                continue;
+            for (final var dependency : level) {
+                if (visited.add(dependency.groupId() + ":" + dependency.artifactId())) {
+                    candidates.add(new MavenDependency(
+                        dependency.groupId(),
+                        dependency.artifactId(),
+                        // The modules manage the versions of the dependencies
+                        // they pull in; their own already have the managed one
+                        (direct ? Optional.<String>empty() : managedVersion(modules, dependency))
+                            .orElse(dependency.version()),
+                        dependency.scope()
+                    ));
+                }
             }
 
-            // The modules manage the versions of the dependencies they pull
-            // in; their own dependencies already have the managed version
-            final var managed = direct
-                ? Optional.<String>empty()
-                : modules.stream()
-                    .map(module -> module.managedVersion(dependency.groupId(), dependency.artifactId()))
-                    .flatMap(Optional::stream)
-                    .findFirst();
+            repository.prefetch(
+                candidates.stream()
+                    .filter(dependency -> dependency.version() != null)
+                    .map(MavenClasspath::coordinates)
+                    .toList(),
+                "pom"
+            );
 
-            final var version = managed.or(() -> Optional.ofNullable(dependency.version()))
-                .filter(candidate -> repository.pom(dependency.groupId(), dependency.artifactId(), candidate).isPresent())
-                .or(() -> repository.newestVersion(dependency.groupId(), dependency.artifactId()));
+            final var next = new ArrayList<MavenDependency>();
 
-            version.ifPresent(found -> {
-                repository.jar(dependency.groupId(), dependency.artifactId(), found).ifPresent(jars::add);
+            for (final var dependency : candidates) {
+                Optional.ofNullable(dependency.version())
+                    .filter(version -> repository.pom(dependency.groupId(), dependency.artifactId(), version).isPresent())
+                    .or(() -> repository.newestVersion(dependency.groupId(), dependency.artifactId()))
+                    .ifPresent(version -> {
+                        artifacts.add(List.of(dependency.groupId(), dependency.artifactId(), version));
 
-                repository.pom(dependency.groupId(), dependency.artifactId(), found)
-                    .flatMap(repository::read)
-                    .ifPresent(pom -> queue.addAll(pom.transitiveDependencies()));
-            });
+                        repository.pom(dependency.groupId(), dependency.artifactId(), version)
+                            .flatMap(repository::read)
+                            .ifPresent(pom -> next.addAll(pom.transitiveDependencies()));
+                    });
+            }
+
+            level = next;
+            direct = false;
         }
 
+        repository.prefetch(artifacts, "jar");
+
+        final var jars = new LinkedHashSet<Path>();
+
+        artifacts.forEach(artifact -> repository.jar(artifact.get(0), artifact.get(1), artifact.get(2)).ifPresent(jars::add));
+
         return List.copyOf(jars);
+    }
+
+    private static Optional<String> managedVersion(
+        final Collection<MavenPom> modules,
+        final MavenDependency dependency
+    ) {
+        return modules.stream()
+            .map(module -> module.managedVersion(dependency.groupId(), dependency.artifactId()))
+            .flatMap(Optional::stream)
+            .findFirst();
+    }
+
+    private static List<String> coordinates(final MavenDependency dependency) {
+        return List.of(dependency.groupId(), dependency.artifactId(), dependency.version());
     }
 }

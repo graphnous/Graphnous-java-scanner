@@ -1,19 +1,27 @@
 package dev.graphnous.scanner.java.maven;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
  * A local Maven repository, such as {@code ~/.m2/repository}, with the
  * poms and jars Maven downloaded when it built the scanned project.
  * Artifacts are at {@code group/path/artifact/version/artifact-version.jar}.
+ * <p>
+ * With a remote repository (see {@link #downloadingFrom}), the poms and
+ * jars it does not have are downloaded into it when they are looked up.
  */
 public final class MavenRepository {
 
@@ -24,7 +32,19 @@ public final class MavenRepository {
 
     private static final Pattern VERSION_PARTS = Pattern.compile("[.\\-]");
 
+    private static final int PARALLEL_DOWNLOADS = 8;
+
     private final Path root;
+
+    private final MavenRemote remote;
+
+    /**
+     * The artifacts the remote repository does not have, so they are not
+     * asked for again.
+     */
+    private final Set<String> missing = ConcurrentHashMap.newKeySet();
+
+    private final AtomicInteger downloads = new AtomicInteger();
 
     /**
      * The poms read from the repository, as many dependencies share their
@@ -32,24 +52,79 @@ public final class MavenRepository {
      */
     private final Map<Path, Optional<MavenPom>> poms = new ConcurrentHashMap<>();
 
-    private MavenRepository(final Path root) {
+    private MavenRepository(
+        final Path root,
+        final MavenRemote remote
+    ) {
         this.root = root;
+        this.remote = remote;
+    }
+
+    private MavenRepository(final Path root) {
+        this(root, null);
     }
 
     public static MavenRepository at(final Path root) {
-        return Files.isDirectory(root) ? new MavenRepository(root) : NONE;
+        return Files.isDirectory(root) ? new MavenRepository(root.toAbsolutePath().normalize()) : NONE;
     }
 
     /**
-     * The repository Maven uses by default, {@code ~/.m2/repository}, or
-     * {@link #NONE} when there is none.
+     * The repository at the directory, which is created when it does not
+     * exist yet, to download into.
+     *
+     * @throws UncheckedIOException when the directory cannot be created
      */
-    public static MavenRepository userDefault() {
-        final var home = System.getProperty("user.home");
+    public static MavenRepository create(final Path root) {
+        try {
+            Files.createDirectories(root);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not create the Maven repository " + root, e);
+        }
 
-        return home == null || home.isBlank()
-            ? NONE
-            : at(Path.of(home, ".m2", "repository"));
+        return at(root);
+    }
+
+    /**
+     * This repository, downloading the poms and jars it does not have from
+     * the remote repository.
+     */
+    public MavenRepository downloadingFrom(final MavenRemote remote) {
+        return root == null ? this : new MavenRepository(root, remote);
+    }
+
+    public Path root() {
+        return root;
+    }
+
+    /**
+     * The number of files downloaded into the repository.
+     */
+    public int downloads() {
+        return downloads.get();
+    }
+
+    /**
+     * Downloads the files of the artifacts that are not in the repository
+     * yet, several at a time, so looking them up afterwards waits for
+     * none. Does nothing without a remote repository.
+     *
+     * @param artifacts {@code groupId}, {@code artifactId} and
+     *                  {@code version} of each artifact
+     * @param extension {@code pom} or {@code jar}
+     */
+    public void prefetch(
+        final Collection<List<String>> artifacts,
+        final String extension
+    ) {
+        if (remote == null || artifacts.isEmpty()) {
+            return;
+        }
+
+        try (var executor = Executors.newFixedThreadPool(PARALLEL_DOWNLOADS)) {
+            artifacts.forEach(artifact -> executor.submit(
+                () -> artifact(artifact.get(0), artifact.get(1), artifact.get(2), extension)
+            ));
+        }
     }
 
     public boolean exists() {
@@ -99,23 +174,33 @@ public final class MavenRepository {
 
     /**
      * The newest version of the artifact in the repository, for a
-     * dependency whose version the poms do not tell.
+     * dependency whose version the poms do not tell; with a remote
+     * repository and no version here, the latest release it lists.
      */
     public Optional<String> newestVersion(
         final String groupId,
         final String artifactId
     ) {
-        return directory(groupId, artifactId).flatMap(directory -> {
-            try (var versions = Files.list(directory)) {
-                return versions
-                    .filter(Files::isDirectory)
-                    .map(version -> version.getFileName().toString())
-                    .filter(version -> Files.isRegularFile(directory.resolve(version).resolve(artifactId + "-" + version + ".pom")))
-                    .max(MavenRepository::compareVersions);
-            } catch (IOException e) {
-                return Optional.empty();
-            }
-        });
+        final var local = directory(groupId, artifactId)
+            .filter(Files::isDirectory)
+            .flatMap(directory -> {
+                try (var versions = Files.list(directory)) {
+                    return versions
+                        .filter(Files::isDirectory)
+                        .map(version -> version.getFileName().toString())
+                        .filter(version -> Files.isRegularFile(directory.resolve(version).resolve(artifactId + "-" + version + ".pom")))
+                        .max(MavenRepository::compareVersions);
+                } catch (IOException e) {
+                    return Optional.empty();
+                }
+            });
+
+        if (local.isPresent() || remote == null || !missing.add(groupId + ":" + artifactId + ":latest")) {
+            return local;
+        }
+
+        return remote.latestVersion(groupId, artifactId)
+            .filter(version -> pom(groupId, artifactId, version).isPresent());
     }
 
     private Optional<Path> artifact(
@@ -128,13 +213,30 @@ public final class MavenRepository {
             return Optional.empty();
         }
 
-        return directory(groupId, artifactId)
+        final var path = directory(groupId, artifactId)
             .map(directory -> directory.resolve(version).resolve(artifactId + "-" + version + "." + extension).normalize())
             // A version such as ../../x must not leave the artifact
-            .filter(path -> path.startsWith(root))
-            .filter(Files::isRegularFile);
+            .filter(candidate -> candidate.startsWith(root));
+
+        if (path.isEmpty() || Files.isRegularFile(path.get())) {
+            return path;
+        }
+
+        if (remote != null
+            && missing.add(groupId + ":" + artifactId + ":" + version + ":" + extension)
+            && remote.download(groupId, artifactId, version, extension, path.get())) {
+            downloads.incrementAndGet();
+            missing.remove(groupId + ":" + artifactId + ":" + version + ":" + extension);
+
+            return path;
+        }
+
+        return Optional.empty();
     }
 
+    /**
+     * The directory of the artifact, whether or not it exists.
+     */
     private Optional<Path> directory(
         final String groupId,
         final String artifactId
@@ -146,9 +248,7 @@ public final class MavenRepository {
 
         final var directory = root.resolve(groupId.replace('.', '/')).resolve(artifactId).normalize();
 
-        return directory.startsWith(root) && Files.isDirectory(directory)
-            ? Optional.of(directory)
-            : Optional.empty();
+        return directory.startsWith(root) ? Optional.of(directory) : Optional.empty();
     }
 
     /**

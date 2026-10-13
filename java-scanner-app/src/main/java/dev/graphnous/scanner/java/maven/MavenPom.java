@@ -2,7 +2,9 @@ package dev.graphnous.scanner.java.maven;
 
 import org.w3c.dom.Element;
 
+import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -436,14 +438,31 @@ public final class MavenPom {
 
     private static Element parse(final Path pom) {
         try (final var input = Files.newInputStream(pom)) {
-            return DocumentBuilderFactory
-                .newInstance()
+            return documentBuilderFactory()
                 .newDocumentBuilder()
                 .parse(input)
                 .getDocumentElement();
         } catch (Exception e) {
             throw new IllegalStateException("Failed to read " + pom, e);
         }
+    }
+
+    /**
+     * Parses XML without reading anything it refers to, such as external
+     * entities, as poms come from the scanned project and from remote
+     * repositories.
+     */
+    static DocumentBuilderFactory documentBuilderFactory() throws ParserConfigurationException {
+        final var factory = DocumentBuilderFactory.newInstance();
+
+        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+
+        return factory;
     }
 
     private static Map<String, String> properties(final Element project) {

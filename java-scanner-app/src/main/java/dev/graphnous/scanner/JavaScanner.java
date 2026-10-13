@@ -168,6 +168,10 @@ public class JavaScanner implements Scanner {
 
             libraries.addAll(found);
             log.detail("Found " + found.size() + (found.size() == 1 ? " library" : " libraries") + " in the local Maven repository");
+
+            if (mavenRepository.downloads() > 0) {
+                log.info("Downloaded " + mavenRepository.downloads() + (mavenRepository.downloads() == 1 ? " file" : " files") + " into " + mavenRepository.root());
+            }
         }
 
         if (!libraries.isEmpty()) {

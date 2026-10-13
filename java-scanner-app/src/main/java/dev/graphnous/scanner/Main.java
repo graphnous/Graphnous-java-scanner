@@ -1,16 +1,25 @@
 package dev.graphnous.scanner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.graphnous.scanner.java.maven.MavenRemote;
 import dev.graphnous.scanner.java.maven.MavenRepository;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
 import dev.graphnous.scanner.model.ScanTarget;
 
 import java.io.File;
+import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
 public class Main {
+
+    /**
+     * Where the image of the scanner looks for a Maven repository first,
+     * so a volume mounted there is used without an argument.
+     */
+    static final Path IMAGE_MAVEN_REPOSITORY = Path.of("/maven-repository");
 
     static void main(final String[] args) {
         final var options = parseArguments(args);
@@ -39,9 +48,7 @@ public class Main {
             options.javaVersion(),
             log,
             options.classpath(),
-            options.mavenRepository() == null
-                ? MavenRepository.userDefault()
-                : MavenRepository.at(options.mavenRepository())
+            mavenRepository(options, log)
         ).scan(options.repository(), target);
 
         final var modules = result.getModules();
@@ -55,13 +62,39 @@ public class Main {
         new ScanResultWriter(new ObjectMapper()).write(result, options.output());
     }
 
-    private static Options parseArguments(final String[] args) {
+    /**
+     * The local Maven repository: the one given, else the one of the image
+     * when it exists, else {@code ~/.m2/repository}. To download into, it
+     * is created when it does not exist.
+     */
+    static MavenRepository mavenRepository(
+        final Options options,
+        final ScanLog log
+    ) {
+        final var location = options.mavenRepository() != null
+            ? options.mavenRepository()
+            : Files.isDirectory(IMAGE_MAVEN_REPOSITORY)
+                ? IMAGE_MAVEN_REPOSITORY
+                : Path.of(System.getProperty("user.home", ""), ".m2", "repository");
+
+        if (!options.downloadDependencies()) {
+            return MavenRepository.at(location);
+        }
+
+        log.detail("Downloading missing libraries from " + options.mavenRemote() + " into " + location);
+
+        return MavenRepository.create(location).downloadingFrom(new MavenRemote(options.mavenRemote()));
+    }
+
+    static Options parseArguments(final String[] args) {
         Path repository = null;
         String target = null;
         Path output = null;
         String javaVersion = null;
         List<Path> classpath = List.of();
         Path mavenRepository = null;
+        var downloadDependencies = false;
+        var mavenRemote = MavenRemote.MAVEN_CENTRAL;
         var verbose = false;
 
         for (int i = 0; i < args.length; i++) {
@@ -103,6 +136,12 @@ public class Main {
                         requireValue(args, ++i, "--maven-repository")
                     );
                 }
+                case "--download-dependencies" -> downloadDependencies = true;
+                case "--maven-remote" -> {
+                    mavenRemote = URI.create(
+                        requireValue(args, ++i, "--maven-remote")
+                    );
+                }
                 case "--verbose" -> verbose = true;
                 default -> throw new IllegalArgumentException(
                     "Unknown argument: " + args[i]
@@ -138,6 +177,8 @@ public class Main {
             javaVersion,
             classpath,
             mavenRepository,
+            downloadDependencies,
+            mavenRemote,
             verbose
         );
     }
@@ -156,13 +197,15 @@ public class Main {
         return args[index];
     }
 
-    private record Options(
+    record Options(
         Path repository,
         String target,
         Path output,
         String javaVersion,
         List<Path> classpath,
         Path mavenRepository,
+        boolean downloadDependencies,
+        URI mavenRemote,
         boolean verbose
     ) {}
 }
