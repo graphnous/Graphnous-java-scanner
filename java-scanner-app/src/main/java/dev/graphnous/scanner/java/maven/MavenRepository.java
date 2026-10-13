@@ -20,8 +20,9 @@ import java.util.regex.Pattern;
  * poms and jars Maven downloaded when it built the scanned project.
  * Artifacts are at {@code group/path/artifact/version/artifact-version.jar}.
  * <p>
- * With a remote repository (see {@link #downloadingFrom}), the poms and
- * jars it does not have are downloaded into it when they are looked up.
+ * With remote repositories (see {@link #downloadingFrom}), the poms and
+ * jars it does not have are downloaded into it when they are looked up,
+ * from the first remote repository that has them.
  */
 public final class MavenRepository {
 
@@ -36,7 +37,7 @@ public final class MavenRepository {
 
     private final Path root;
 
-    private final MavenRemote remote;
+    private final List<MavenRemote> remotes;
 
     /**
      * The artifacts the remote repository does not have, so they are not
@@ -54,14 +55,14 @@ public final class MavenRepository {
 
     private MavenRepository(
         final Path root,
-        final MavenRemote remote
+        final List<MavenRemote> remotes
     ) {
         this.root = root;
-        this.remote = remote;
+        this.remotes = List.copyOf(remotes);
     }
 
     private MavenRepository(final Path root) {
-        this(root, null);
+        this(root, List.of());
     }
 
     public static MavenRepository at(final Path root) {
@@ -89,7 +90,15 @@ public final class MavenRepository {
      * the remote repository.
      */
     public MavenRepository downloadingFrom(final MavenRemote remote) {
-        return root == null ? this : new MavenRepository(root, remote);
+        return downloadingFrom(List.of(remote));
+    }
+
+    /**
+     * This repository, downloading the poms and jars it does not have from
+     * the first of the remote repositories that has them.
+     */
+    public MavenRepository downloadingFrom(final List<MavenRemote> remotes) {
+        return root == null ? this : new MavenRepository(root, remotes);
     }
 
     public Path root() {
@@ -116,7 +125,7 @@ public final class MavenRepository {
         final Collection<List<String>> artifacts,
         final String extension
     ) {
-        if (remote == null || artifacts.isEmpty()) {
+        if (remotes.isEmpty() || artifacts.isEmpty()) {
             return;
         }
 
@@ -195,11 +204,14 @@ public final class MavenRepository {
                 }
             });
 
-        if (local.isPresent() || remote == null || !missing.add(groupId + ":" + artifactId + ":latest")) {
+        if (local.isPresent() || remotes.isEmpty() || !missing.add(groupId + ":" + artifactId + ":latest")) {
             return local;
         }
 
-        return remote.latestVersion(groupId, artifactId)
+        return remotes.stream()
+            .map(remote -> remote.latestVersion(groupId, artifactId))
+            .flatMap(Optional::stream)
+            .findFirst()
             .filter(version -> pom(groupId, artifactId, version).isPresent());
     }
 
@@ -222,9 +234,8 @@ public final class MavenRepository {
             return path;
         }
 
-        if (remote != null
-            && missing.add(groupId + ":" + artifactId + ":" + version + ":" + extension)
-            && remote.download(groupId, artifactId, version, extension, path.get())) {
+        if (missing.add(groupId + ":" + artifactId + ":" + version + ":" + extension)
+            && remotes.stream().anyMatch(remote -> remote.download(groupId, artifactId, version, extension, path.get()))) {
             downloads.incrementAndGet();
             missing.remove(groupId + ":" + artifactId + ":" + version + ":" + extension);
 

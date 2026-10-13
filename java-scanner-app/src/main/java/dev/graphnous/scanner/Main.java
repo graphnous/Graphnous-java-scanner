@@ -3,6 +3,7 @@ package dev.graphnous.scanner;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.graphnous.scanner.java.maven.MavenRemote;
 import dev.graphnous.scanner.java.maven.MavenRepository;
+import dev.graphnous.scanner.java.maven.MavenSettings;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
 import dev.graphnous.scanner.model.ScanTarget;
 
@@ -12,6 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class Main {
 
@@ -20,6 +23,12 @@ public class Main {
      * so a volume mounted there is used without an argument.
      */
     static final Path IMAGE_MAVEN_REPOSITORY = Path.of("/maven-repository");
+
+    /**
+     * The Maven settings the image of the scanner reads, when they exist,
+     * so settings mounted there are used without an argument.
+     */
+    static final Path IMAGE_MAVEN_SETTINGS = Path.of("/maven-settings/settings.xml");
 
     static void main(final String[] args) {
         final var options = parseArguments(args);
@@ -81,9 +90,34 @@ public class Main {
             return MavenRepository.at(location);
         }
 
-        log.detail("Downloading missing libraries from " + options.mavenRemote() + " into " + location);
+        final var remotes = mavenRemotes(options, System::getenv);
 
-        return MavenRepository.create(location).downloadingFrom(new MavenRemote(options.mavenRemote()));
+        log.detail(
+            "Downloading missing libraries into " + location + " from "
+            + remotes.stream()
+                .map(remote -> remote + (remote.hasHeaders() ? " with credentials" : ""))
+                .collect(Collectors.joining(", "))
+        );
+
+        return MavenRepository.create(location).downloadingFrom(remotes);
+    }
+
+    /**
+     * The remote repositories the Maven settings configure, given or else
+     * those of the image when they exist; without settings, the one of
+     * {@code --maven-remote}, Maven Central by default.
+     */
+    static List<MavenRemote> mavenRemotes(
+        final Options options,
+        final Function<String, String> environment
+    ) {
+        final var settings = options.mavenSettings() != null
+            ? options.mavenSettings()
+            : Files.isRegularFile(IMAGE_MAVEN_SETTINGS) ? IMAGE_MAVEN_SETTINGS : null;
+
+        return settings == null
+            ? List.of(new MavenRemote(options.mavenRemote()))
+            : MavenSettings.remotes(settings, options.mavenRemote(), environment);
     }
 
     static Options parseArguments(final String[] args) {
@@ -95,6 +129,7 @@ public class Main {
         Path mavenRepository = null;
         var downloadDependencies = false;
         var mavenRemote = MavenRemote.MAVEN_CENTRAL;
+        Path mavenSettings = null;
         var verbose = false;
 
         for (int i = 0; i < args.length; i++) {
@@ -142,6 +177,11 @@ public class Main {
                         requireValue(args, ++i, "--maven-remote")
                     );
                 }
+                case "--maven-settings" -> {
+                    mavenSettings = Path.of(
+                        requireValue(args, ++i, "--maven-settings")
+                    );
+                }
                 case "--verbose" -> verbose = true;
                 default -> throw new IllegalArgumentException(
                     "Unknown argument: " + args[i]
@@ -179,6 +219,7 @@ public class Main {
             mavenRepository,
             downloadDependencies,
             mavenRemote,
+            mavenSettings,
             verbose
         );
     }
@@ -206,6 +247,7 @@ public class Main {
         Path mavenRepository,
         boolean downloadDependencies,
         URI mavenRemote,
+        Path mavenSettings,
         boolean verbose
     ) {}
 }

@@ -11,6 +11,12 @@
 # it misses from Maven Central (--maven-remote for another repository);
 # the volume keeps them for the next scan:
 #   -v graphnous-maven:/maven-repository ... --download-dependencies
+# For private repositories, mount a Maven settings.xml at
+# /maven-settings/settings.xml (or pass --maven-settings): its mirrors, the
+# repositories of its active profiles and the credentials of its servers
+# are used, and ${env.NAME} in it reads environment variables, e.g.
+#   -v ./settings.xml:/maven-settings/settings.xml:ro -e NEXUS_TOKEN=...
+# Repositories the poms of the scanned project declare are never used.
 # Or mount a repository a build filled, read-only, without downloading:
 #   -v "$HOME/.m2/repository:/maven-repository:ro"
 # Or pass the jars, e.g. as mvn dependency:build-classpath lists them:

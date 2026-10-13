@@ -17,6 +17,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -24,6 +25,11 @@ import java.util.regex.Pattern;
  * A remote Maven repository, such as Maven Central, to download the poms
  * and jars of the libraries of a project from. Only files are downloaded:
  * no Maven and no plugin of the project runs.
+ * <p>
+ * The headers of the repository, e.g. its credentials (see
+ * {@link MavenSettings}), are sent to it alone: a redirect to another host,
+ * as repositories do to the storage of their files, is followed without
+ * them.
  */
 public final class MavenRemote {
 
@@ -40,21 +46,63 @@ public final class MavenRemote {
      */
     private static final long MAX_SIZE = 512L * 1024 * 1024;
 
+    private static final int MAX_REDIRECTS = 5;
+
+    private final String id;
+
     private final URI base;
+
+    private final Map<String, String> headers;
 
     private final HttpClient client;
 
     public MavenRemote(final URI base) {
+        this("central", base, Map.of());
+    }
+
+    /**
+     * @param headers sent with each request to the repository, e.g.
+     *                {@code Authorization}
+     */
+    public MavenRemote(
+        final String id,
+        final URI base,
+        final Map<String, String> headers
+    ) {
+        this.id = id;
         this.base = base.toString().endsWith("/") ? base : URI.create(base + "/");
+        this.headers = Map.copyOf(headers);
         this.client = HttpClient.newBuilder()
             .proxy(ProxySelector.getDefault())
-            .followRedirects(HttpClient.Redirect.NORMAL)
+            // Followed here, to leave the headers out for other hosts
+            .followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(10))
             .build();
     }
 
+    public String id() {
+        return id;
+    }
+
     public URI base() {
         return base;
+    }
+
+    Map<String, String> headers() {
+        return headers;
+    }
+
+    /**
+     * Whether requests carry credentials or other headers.
+     */
+    public boolean hasHeaders() {
+        return !headers.isEmpty();
+    }
+
+    @Override
+    public String toString() {
+        // Without the user info a URL may hold
+        return id + " (" + base.getScheme() + "://" + base.getHost() + (base.getPort() < 0 ? "" : ":" + base.getPort()) + base.getPath() + ")";
     }
 
     /**
@@ -123,8 +171,8 @@ public final class MavenRemote {
         }
 
         try {
-            final var response = client.send(
-                request(groupId.replace('.', '/') + "/" + artifactId + "/maven-metadata.xml"),
+            final var response = send(
+                groupId.replace('.', '/') + "/" + artifactId + "/maven-metadata.xml",
                 HttpResponse.BodyHandlers.ofByteArray()
             );
 
@@ -156,7 +204,7 @@ public final class MavenRemote {
         final String path,
         final Path target
     ) throws IOException, InterruptedException {
-        final var response = client.send(request(path), HttpResponse.BodyHandlers.ofInputStream());
+        final var response = send(path, HttpResponse.BodyHandlers.ofInputStream());
 
         try (InputStream body = response.body()) {
             if (response.statusCode() != 200) {
@@ -189,7 +237,7 @@ public final class MavenRemote {
      * of the {@code .sha1} file next to it.
      */
     private Optional<String> checksum(final String path) throws IOException, InterruptedException {
-        final var response = client.send(request(path + ".sha1"), HttpResponse.BodyHandlers.ofString());
+        final var response = send(path + ".sha1", HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
             return Optional.empty();
@@ -198,11 +246,48 @@ public final class MavenRemote {
         return Optional.of(response.body().trim().split("\\s+")[0]).filter(sum -> sum.length() == 40);
     }
 
-    private HttpRequest request(final String path) {
-        return HttpRequest.newBuilder(base.resolve(path))
-            .timeout(Duration.ofMinutes(2))
-            .GET()
-            .build();
+    /**
+     * Requests the file of the repository, following redirects; the
+     * headers of the repository go only to its own scheme, host and port.
+     */
+    private <T> HttpResponse<T> send(
+        final String path,
+        final HttpResponse.BodyHandler<T> body
+    ) throws IOException, InterruptedException {
+        var uri = base.resolve(path);
+
+        for (int redirects = 0; ; redirects++) {
+            final var request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofMinutes(2))
+                .GET();
+
+            if (isSameOrigin(uri)) {
+                headers.forEach(request::header);
+            }
+
+            final var response = client.send(request.build(), body);
+            final var location = response.headers().firstValue("Location");
+
+            if (response.statusCode() / 100 != 3 || location.isEmpty() || redirects == MAX_REDIRECTS) {
+                return response;
+            }
+
+            if (response.body() instanceof InputStream stream) {
+                stream.close();
+            }
+
+            uri = uri.resolve(location.get());
+        }
+    }
+
+    private boolean isSameOrigin(final URI uri) {
+        return base.getScheme().equalsIgnoreCase(uri.getScheme())
+            && base.getHost() != null && base.getHost().equalsIgnoreCase(uri.getHost())
+            && port(base) == port(uri);
+    }
+
+    private static int port(final URI uri) {
+        return uri.getPort() >= 0 ? uri.getPort() : "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
     }
 
     private static boolean isCoordinate(final String value) {

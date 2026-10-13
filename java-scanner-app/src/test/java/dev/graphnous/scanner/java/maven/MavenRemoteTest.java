@@ -180,6 +180,93 @@ class MavenRemoteTest {
         assertThat(requests).isEmpty();
     }
 
+    @Test
+    void sendsTheCredentialsToTheRepositoryAloneAndNotWhereItRedirects() throws IOException {
+        remote.pom("org.example", "web", "1.0", "");
+        remote.jar("org.example", "web", "1.0", source("Web"));
+
+        final var authorizations = new ConcurrentHashMap<String, String>();
+
+        // The storage serves the files of the repository, which redirects
+        // there, as repositories do to the storage of their files
+        final var storage = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        storage.createContext("/", exchange -> {
+            authorizations.put("storage", String.valueOf(exchange.getRequestHeaders().getFirst("Authorization")));
+            final var file = remote.root().resolve(exchange.getRequestURI().getPath().substring(1));
+
+            if (Files.isRegularFile(file)) {
+                final var content = Files.readAllBytes(file);
+                exchange.sendResponseHeaders(200, content.length);
+                exchange.getResponseBody().write(content);
+            } else {
+                exchange.sendResponseHeaders(404, -1);
+            }
+            exchange.close();
+        });
+        storage.start();
+
+        final var repository = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        repository.createContext("/private/", exchange -> {
+            final var authorization = exchange.getRequestHeaders().getFirst("Authorization");
+            authorizations.put("repository", String.valueOf(authorization));
+
+            if (!"Basic c2Nhbm5lcjpzZWNyZXQ=".equals(authorization)) {
+                exchange.sendResponseHeaders(401, -1);
+            } else {
+                exchange.getResponseHeaders().add(
+                    "Location",
+                    "http://127.0.0.1:" + storage.getAddress().getPort() + "/" + exchange.getRequestURI().getPath().substring("/private/".length())
+                );
+                exchange.sendResponseHeaders(302, -1);
+            }
+            exchange.close();
+        });
+        repository.start();
+
+        try {
+            final var local = MavenRepository.create(directory.resolve("local")).downloadingFrom(new MavenRemote(
+                "private",
+                URI.create("http://127.0.0.1:" + repository.getAddress().getPort() + "/private"),
+                Map.of("Authorization", "Basic c2Nhbm5lcjpzZWNyZXQ=")
+            ));
+
+            assertThat(local.jar("org.example", "web", "1.0")).isPresent();
+            assertThat(authorizations)
+                .containsEntry("repository", "Basic c2Nhbm5lcjpzZWNyZXQ=")
+                .containsEntry("storage", "null");
+        } finally {
+            repository.stop(0);
+            storage.stop(0);
+        }
+    }
+
+    @Test
+    void downloadsFromTheFirstRemoteThatHasTheFile() throws IOException {
+        remote.pom("org.example", "web", "1.0", "");
+        remote.jar("org.example", "web", "1.0", source("Web"));
+
+        final var empty = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        final var asked = new ConcurrentHashMap<String, Integer>();
+        empty.createContext("/", exchange -> {
+            asked.merge(exchange.getRequestURI().getPath(), 1, Integer::sum);
+            exchange.sendResponseHeaders(404, -1);
+            exchange.close();
+        });
+        empty.start();
+
+        try {
+            final var local = MavenRepository.create(directory.resolve("local")).downloadingFrom(List.of(
+                new MavenRemote(URI.create("http://127.0.0.1:" + empty.getAddress().getPort() + "/")),
+                new MavenRemote(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/maven2"))
+            ));
+
+            assertThat(local.jar("org.example", "web", "1.0")).isPresent();
+            assertThat(asked).containsKey("/org/example/web/1.0/web-1.0.jar");
+        } finally {
+            empty.stop(0);
+        }
+    }
+
     private MavenRepository local() {
         return MavenRepository.create(directory.resolve("local"))
             .downloadingFrom(new MavenRemote(URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/maven2")));

@@ -58,7 +58,7 @@ class MainTest {
     private static Main.Options options(final Path mavenRepository, final boolean download) {
         return new Main.Options(
             Path.of("repository"), ".", Path.of("out.json"), null,
-            List.of(), mavenRepository, download, MavenRemote.MAVEN_CENTRAL, false
+            List.of(), mavenRepository, download, MavenRemote.MAVEN_CENTRAL, null, false
         );
     }
 }
