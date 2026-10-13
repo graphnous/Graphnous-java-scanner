@@ -129,6 +129,89 @@ class MavenClasspathTest {
     }
 
     @Test
+    void leavesOutWhatADependencyExcludesFromAllItPullsIn() throws IOException {
+        final var local = new LocalRepository(directory.resolve("m2"));
+        local.pom("org.example", "web", "1.0", dependencies(
+            dependency("org.example", "http", "1.0", null),
+            dependency("org.example", "json", "1.0", null)
+        ));
+        local.pom("org.example", "http", "1.0", dependencies(
+            dependency("org.example", "logging", "1.0", null),
+            dependency("org.other", "codec", "1.0", null)
+        ));
+        local.pom("org.example", "json", "1.0", "");
+        local.pom("org.example", "logging", "1.0", "");
+        local.pom("org.other", "codec", "1.0", "");
+        List.of("web", "http", "json", "logging").forEach(artifact -> jar(local, artifact, "1.0"));
+        local.jar("org.other", "codec", "1.0", Map.of("org/other/Codec.java", "package org.other; public class Codec { }"));
+
+        // The exclusions of web apply to what http pulls in as well
+        final var module = module(dependencies("""
+            <dependency>
+                <groupId>org.example</groupId>
+                <artifactId>web</artifactId>
+                <version>1.0</version>
+                <exclusions>
+                    <exclusion><groupId>org.example</groupId><artifactId>json</artifactId></exclusion>
+                    <exclusion><groupId>org.example</groupId><artifactId>logging</artifactId></exclusion>
+                    <exclusion><groupId>org.other</groupId><artifactId>*</artifactId></exclusion>
+                </exclusions>
+            </dependency>
+            """));
+
+        assertThat(names(MavenClasspath.of(List.of(module), Set.of(), local.repository())))
+            .containsExactly("web-1.0.jar", "http-1.0.jar");
+    }
+
+    @Test
+    void pullsInWhatOneDependencyExcludesThroughAnother() throws IOException {
+        final var local = new LocalRepository(directory.resolve("m2"));
+        local.pom("org.example", "web", "1.0", dependencies(dependency("org.example", "json", "1.0", null)));
+        local.pom("org.example", "rest", "1.0", dependencies(dependency("org.example", "json", "1.0", null)));
+        local.pom("org.example", "json", "1.0", "");
+        List.of("web", "rest", "json").forEach(artifact -> jar(local, artifact, "1.0"));
+
+        final var module = module(dependencies(
+            """
+            <dependency>
+                <groupId>org.example</groupId><artifactId>web</artifactId><version>1.0</version>
+                <exclusions><exclusion><groupId>*</groupId><artifactId>*</artifactId></exclusion></exclusions>
+            </dependency>
+            """,
+            dependency("org.example", "rest", "1.0", null)
+        ));
+
+        assertThat(names(MavenClasspath.of(List.of(module), Set.of(), local.repository())))
+            .containsExactly("web-1.0.jar", "rest-1.0.jar", "json-1.0.jar");
+    }
+
+    @Test
+    void takesTheExclusionsTheModuleManages() throws IOException {
+        final var local = new LocalRepository(directory.resolve("m2"));
+        local.pom("org.example", "web", "1.0", dependencies(dependency("org.example", "json", "1.0", null)));
+        local.pom("org.example", "json", "1.0", "");
+        List.of("web", "json").forEach(artifact -> jar(local, artifact, "1.0"));
+
+        final var module = module("""
+            <dependencyManagement>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.example</groupId><artifactId>web</artifactId><version>1.0</version>
+                        <exclusions><exclusion><groupId>org.example</groupId><artifactId>json</artifactId></exclusion></exclusions>
+                    </dependency>
+                </dependencies>
+            </dependencyManagement>
+            %s
+            """.formatted(dependencies(dependency("org.example", "web", null, null))));
+
+        assertThat(module.dependencies()).containsExactly(
+            new MavenDependency("org.example", "web", "1.0", "compile", Set.of("org.example:json"))
+        );
+        assertThat(names(MavenClasspath.of(List.of(module), Set.of(), local.repository())))
+            .containsExactly("web-1.0.jar");
+    }
+
+    @Test
     void takesTheNewestVersionInTheRepositoryWhenThePomsDoNotTell() throws IOException {
         final var local = new LocalRepository(directory.resolve("m2"));
         local.pom("org.example", "web", "1.0", "");

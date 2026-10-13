@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -220,12 +222,32 @@ public final class MavenPom {
                         text(element, "scope")
                             .or(() -> managed.flatMap(dependency -> text(dependency, "scope")))
                             .map(this::resolveOrKeep)
-                            .orElse("compile")
+                            .orElse("compile"),
+                        // Those the dependency declares, else those its
+                        // management declares
+                        Optional.of(exclusions(element))
+                            .filter(exclusions -> !exclusions.isEmpty())
+                            .or(() -> managed.map(this::exclusions))
+                            .orElseGet(Set::of)
                     );
                 });
             }));
 
         return List.copyOf(dependencies.values());
+    }
+
+    /**
+     * The {@code exclusions} of a dependency element, as
+     * {@code groupId:artifactId}.
+     */
+    private Set<String> exclusions(final Element dependency) {
+        return child(dependency, "exclusions")
+            .map(element -> children(element, "exclusion"))
+            .orElseGet(List::of)
+            .stream()
+            .map(exclusion -> text(exclusion, "groupId").map(this::resolveOrKeep).orElse("*")
+                + ":" + text(exclusion, "artifactId").map(this::resolveOrKeep).orElse("*"))
+            .collect(Collectors.toSet());
     }
 
     /**
