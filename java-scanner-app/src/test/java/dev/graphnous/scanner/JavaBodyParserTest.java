@@ -1,6 +1,7 @@
 package dev.graphnous.scanner;
 
 import dev.graphnous.scanner.java.maven.LocalRepository;
+import dev.graphnous.scanner.model.Argument;
 import dev.graphnous.scanner.model.Call;
 import dev.graphnous.scanner.model.FieldAccess;
 import dev.graphnous.scanner.model.File;
@@ -68,6 +69,65 @@ class JavaBodyParserTest {
                 tuple(Call.Kind.METHOD, "java.util.List.of(E)", true, 10, 21),
                 tuple(Call.Kind.METHOD, "com.example.Orders.find(java.lang.String)", true, 10, 29)
             );
+    }
+
+    @Test
+    void listsTheArgumentsOfCallsAsWritten() throws IOException {
+        final var orders = write("com/example/Orders.java", """
+            package com.example;
+
+            import java.util.List;
+            import java.util.function.Consumer;
+
+            class Orders {
+                Orders(String name) { }
+
+                void save(String id, int count, Consumer<String> then) { }
+
+                void run() {
+                    save("1",  1
+                        + 2, id -> {
+                            System.out.println("Saved the order with id " + id + ", which is the first of the orders that this method saves, and the only one at that");
+                            System.out.println("And a second line, so that what is passed is longer than is kept");
+                        });
+                    new Orders("orders").run();
+                    List.of("a").forEach(this::log);
+                }
+
+                void log(String line) { }
+            }
+            """);
+
+        final var run = method(parse(orders, orders), "run");
+
+        assertThat(run.getCalls())
+            .filteredOn(call -> !call.getTarget().startsWith("java.io"))
+            .extracting(
+                Call::getTarget,
+                call -> call.getArguments().stream().map(Argument::getValue).toList()
+            )
+            .containsExactly(
+                tuple(
+                    "com.example.Orders.save(java.lang.String, int, java.util.function.Consumer<java.lang.String>)",
+                    List.of(
+                        "\"1\"",
+                        "1 + 2",
+                        "id -> { System.out.println(\"Saved the order with id \" + id + \", which is the first of the orders that this method saves, and the only one at that\"); System.out.println(\"And a second line, so that wha…"
+                    )
+                ),
+                tuple("com.example.Orders.run()", List.of()),
+                tuple("com.example.Orders.Orders(java.lang.String)", List.of("\"orders\"")),
+                tuple("java.lang.Iterable.forEach(java.util.function.Consumer<? super T>)", List.of("this::log")),
+                tuple("java.util.List.of(E)", List.of("\"a\"")),
+                tuple("com.example.Orders.log(java.lang.String)", List.of())
+            );
+
+        assertThat(run.getCalls())
+            .flatExtracting(Call::getArguments)
+            .allSatisfy(argument -> {
+                assertThat(argument.getValue()).hasSizeLessThanOrEqualTo(200);
+                assertThat(argument.getName()).isNull();
+            });
     }
 
     @Test

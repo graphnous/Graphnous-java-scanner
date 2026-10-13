@@ -50,6 +50,8 @@ java -jar java-scanner-app/target/java-scanner.jar \
   to the qualified name of what they refer to, e.g.
   `com.example.Orders.find(java.lang.String)`. What cannot be resolved is
   kept as written, with `resolved` set to `false`.
+- For each call: its arguments as written, each on one line and cut off at
+  200 characters, in the order written.
 
 Calls into a library resolve only when the scanner has the jars of the
 project's libraries; see below. Without them, calls into the JDK and the
