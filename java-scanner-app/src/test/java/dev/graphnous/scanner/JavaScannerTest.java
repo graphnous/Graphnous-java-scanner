@@ -1,5 +1,7 @@
 package dev.graphnous.scanner;
 
+import dev.graphnous.scanner.java.maven.LocalRepository;
+import dev.graphnous.scanner.java.maven.MavenRepository;
 import dev.graphnous.scanner.model.Annotation;
 import dev.graphnous.scanner.model.Class;
 import dev.graphnous.scanner.model.File;
@@ -13,6 +15,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -23,6 +26,9 @@ class JavaScannerTest {
 
     @TempDir
     Path repository;
+
+    @TempDir
+    Path home;
 
     @Test
     void scansModulesAndTheirClasses() throws IOException {
@@ -188,6 +194,127 @@ class JavaScannerTest {
             "Module core: 3 files (1 test), 4 classes"
         );
         assertThat(log.warnings).isEmpty();
+    }
+
+    @Test
+    void resolvesCallsIntoTheLibrariesOfThePomsInTheLocalMavenRepository() throws IOException {
+        final var local = new LocalRepository(home.resolve("m2"));
+        local.pom("org.example", "client", "1.0", "");
+        local.jar("org.example", "client", "1.0", Map.of(
+            "org/example/Client.java", "package org.example; public class Client { public void connect(String url) { } }"
+        ));
+
+        write("pom.xml", """
+            <project>
+                <groupId>com.example</groupId>
+                <artifactId>shop</artifactId>
+                <version>1.0</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.example</groupId>
+                        <artifactId>client</artifactId>
+                        <version>1.0</version>
+                    </dependency>
+                </dependencies>
+            </project>
+            """);
+        write("src/main/java/com/example/Service.java", """
+            package com.example;
+
+            import org.example.Client;
+
+            class Service {
+                void run(Client client) {
+                    client.connect("http://localhost");
+                }
+            }
+            """);
+
+        final var log = new RecordingScanLog();
+        final var result = new JavaScanner(null, log, List.of(), local.repository()).scan(repository, target());
+
+        assertThat(calls(result.getModules()))
+            .containsExactly("org.example.Client.connect(java.lang.String)");
+        assertThat(log.info).contains("Resolving calls into 1 library");
+    }
+
+    @Test
+    void resolvesCallsIntoTheJarsOfTheClasspath() throws IOException {
+        final var jar = new LocalRepository(home.resolve("m2")).jar("org.example", "client", "1.0", Map.of(
+            "org/example/Client.java", "package org.example; public class Client { public void connect(String url) { } }"
+        ));
+
+        write("pom.xml", "<project/>");
+        write("src/main/java/com/example/Service.java", """
+            package com.example;
+
+            class Service {
+                void run(org.example.Client client) {
+                    client.connect("http://localhost");
+                }
+            }
+            """);
+
+        final var log = new RecordingScanLog();
+        final var result = new JavaScanner(null, log, List.of(jar, home.resolve("classes")), MavenRepository.NONE)
+            .scan(repository, target());
+
+        assertThat(calls(result.getModules()))
+            .containsExactly("org.example.Client.connect(java.lang.String)");
+        assertThat(log.warnings).containsExactly("Skipping classpath entry " + home.resolve("classes") + ": not a jar");
+    }
+
+    @Test
+    void resolvesCallsIntoGeneratedSourcesWithoutScanningThem() throws IOException {
+        write("pom.xml", "<project/>");
+        write("target/generated-sources/openapi/com/example/api/OrderDto.java", """
+            package com.example.api;
+
+            public class OrderDto {
+                public String getId() { return null; }
+            }
+            """);
+        write("src/main/java/com/example/Service.java", """
+            package com.example;
+
+            import com.example.api.OrderDto;
+
+            class Service {
+                String run(OrderDto order) {
+                    return order.getId();
+                }
+            }
+            """);
+
+        final var result = new JavaScanner().scan(repository, target());
+
+        assertThat(calls(result.getModules()))
+            .containsExactly("com.example.api.OrderDto.getId()");
+        assertThat(result.getModules().getFirst().getFiles())
+            .extracting(File::getPath)
+            .containsExactly("src/main/java/com/example/Service.java");
+    }
+
+    private static ScanTarget target() {
+        final var target = new ScanTarget();
+        target.setPath(".");
+        target.setLanguage(ScanTarget.Language.JAVA);
+        target.setBuildSystem(ScanTarget.BuildSystem.MAVEN);
+
+        return target;
+    }
+
+    /**
+     * The targets of the calls in the methods of the modules.
+     */
+    private static List<String> calls(final List<Module> modules) {
+        return modules.stream()
+            .flatMap(module -> module.getFiles().stream())
+            .flatMap(file -> file.getClasses().stream())
+            .flatMap(clazz -> clazz.getMethods().stream())
+            .flatMap(method -> method.getCalls().stream())
+            .map(call -> call.getTarget())
+            .toList();
     }
 
     private static Module module(final List<Module> modules, final String path) {

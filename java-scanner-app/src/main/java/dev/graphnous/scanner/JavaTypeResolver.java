@@ -5,6 +5,7 @@ import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.nodeTypes.NodeWithName;
+import com.github.javaparser.ast.nodeTypes.NodeWithStatements;
 import com.github.javaparser.ast.nodeTypes.NodeWithTypeParameters;
 import com.github.javaparser.ast.type.ArrayType;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
@@ -20,6 +21,7 @@ import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Resolves the types used in one source file to their fully qualified
@@ -36,8 +38,10 @@ import java.util.stream.Collectors;
  *     <li>single-type imports,</li>
  *     <li>scanned types in the package of the file,</li>
  *     <li>{@code java.lang},</li>
- *     <li>scanned and JDK types of on-demand imports.</li>
+ *     <li>scanned, JDK and library types of on-demand imports.</li>
  * </ol>
+ * Library types are known when the jars of the libraries are available,
+ * see {@link JavaTypeIndex}.
  * A type found in none of these comes from a library. When the file has
  * exactly one on-demand import of a library package, e.g.
  * {@code import org.springframework.web.bind.annotation.*}, the type is
@@ -60,6 +64,8 @@ class JavaTypeResolver {
     private final JavaTypeIndex index;
 
     private final String packageName;
+
+    private JavaLocalClasses localClasses;
 
     JavaTypeResolver(final CompilationUnit compilationUnit) {
         this(compilationUnit, JavaTypeIndex.EMPTY);
@@ -181,16 +187,52 @@ class JavaTypeResolver {
 
     /**
      * The qualified name of a type declared in this file, including the
-     * types it is nested in, e.g. {@code com.example.Outer.Inner}.
+     * types it is nested in, e.g. {@code com.example.Outer.Inner}. Local
+     * classes, and classes nested in local and anonymous classes, have no
+     * canonical name and get their binary name, e.g.
+     * {@code com.example.Outer$1Local}; see {@link JavaLocalClasses}.
      */
     String qualifiedName(final TypeDeclaration<?> declaration) {
         final var names = new ArrayList<String>();
 
-        for (TypeDeclaration<?> current = declaration; current != null; current = enclosingType(current).orElse(null)) {
-            names.addFirst(current.getNameAsString());
+        for (Node current = declaration; current != null; ) {
+            final var local = localClasses().name(current);
+
+            if (local.isPresent()) {
+                return local.get() + names.stream().map(name -> "$" + name).collect(Collectors.joining());
+            }
+
+            if (!(current instanceof TypeDeclaration<?> type)) {
+                break;
+            }
+
+            names.addFirst(type.getNameAsString());
+
+            final var parent = type.getParentNode().orElse(null);
+            current = parent instanceof TypeDeclaration<?> || JavaLocalClasses.isAnonymous(parent) ? parent : null;
         }
 
         return qualify(packageName, String.join(".", names));
+    }
+
+    /**
+     * The binary name of an anonymous class of this file, e.g.
+     * {@code com.example.Outer$1}; see {@link JavaLocalClasses}.
+     */
+    Optional<String> anonymousName(final Node declaration) {
+        return localClasses().name(declaration);
+    }
+
+    /**
+     * The local and anonymous classes of the file, named when they are
+     * first needed.
+     */
+    JavaLocalClasses localClasses() {
+        if (localClasses == null) {
+            localClasses = new JavaLocalClasses(compilationUnit, packageName);
+        }
+
+        return localClasses;
     }
 
     /**
@@ -263,29 +305,31 @@ class JavaTypeResolver {
     }
 
     /**
-     * A type named {@code name} that is the enclosing type itself or one of
-     * its member types, nearest first, or a top-level type of the file.
+     * A type named {@code name} that is the enclosing type itself, one of
+     * its member types or a local class of an enclosing block, nearest
+     * first, or a top-level type of the file.
      */
     private Optional<TypeDeclaration<?>> declaredType(
         final String name,
         final Node context
     ) {
         for (Node current = context; current != null; current = current.getParentNode().orElse(null)) {
-            if (current instanceof TypeDeclaration<?> type) {
-                if (type.getNameAsString().equals(name)) {
-                    return Optional.of(type);
-                }
+            if (current instanceof TypeDeclaration<?> type && type.getNameAsString().equals(name)) {
+                return Optional.of(type);
+            }
 
-                final var member = type.getMembers()
-                    .stream()
-                    .filter(TypeDeclaration.class::isInstance)
-                    .<TypeDeclaration<?>>map(TypeDeclaration.class::cast)
-                    .filter(nested -> nested.getNameAsString().equals(name))
-                    .findFirst();
+            final var nested = (current instanceof NodeWithStatements<?> block
+                ? block.getStatements().stream().flatMap(statement -> statement.getChildNodes().stream())
+                : current instanceof TypeDeclaration<?> || JavaLocalClasses.isAnonymous(current)
+                    ? JavaLocalClasses.members(current).stream()
+                    : Stream.<Node>empty())
+                .filter(TypeDeclaration.class::isInstance)
+                .<TypeDeclaration<?>>map(TypeDeclaration.class::cast)
+                .filter(type -> type.getNameAsString().equals(name))
+                .findFirst();
 
-                if (member.isPresent()) {
-                    return member;
-                }
+            if (nested.isPresent()) {
+                return nested;
             }
         }
 
@@ -310,7 +354,9 @@ class JavaTypeResolver {
             .stream()
             .filter(declaration -> !declaration.isStatic() && declaration.isAsterisk())
             .map(ImportDeclaration::getNameAsString)
-            .map(imported -> scannedType(imported, name).or(() -> jdkType(imported, name)))
+            .map(imported -> scannedType(imported, name)
+                .or(() -> jdkType(imported, name))
+                .or(() -> libraryType(imported, name)))
             .flatMap(Optional::stream)
             .findFirst();
     }
@@ -346,6 +392,21 @@ class JavaTypeResolver {
     }
 
     /**
+     * The type when a library on the classpath of the scan has it; see
+     * {@link JavaTypeIndex#containsLibraryType}.
+     */
+    private Optional<String> libraryType(
+        final String packageName,
+        final String name
+    ) {
+        final var qualifiedName = packageName + "." + name;
+
+        return index.containsLibraryType(qualifiedName)
+            ? Optional.of(qualifiedName)
+            : Optional.empty();
+    }
+
+    /**
      * Whether the JDK the scanner runs on has the type, which is how
      * {@code java.lang} and on-demand imports of JDK packages resolve.
      */
@@ -362,13 +423,6 @@ class JavaTypeResolver {
         } catch (ClassNotFoundException | LinkageError e) {
             return Optional.empty();
         }
-    }
-
-    private static Optional<TypeDeclaration<?>> enclosingType(final TypeDeclaration<?> declaration) {
-        return declaration
-            .getParentNode()
-            .filter(TypeDeclaration.class::isInstance)
-            .map(parent -> (TypeDeclaration<?>) parent);
     }
 
     private static String qualify(

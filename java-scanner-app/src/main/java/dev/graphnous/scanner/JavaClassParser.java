@@ -19,11 +19,13 @@ import com.github.javaparser.ast.body.AnnotationMemberDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.CompactConstructorDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
+import com.github.javaparser.ast.body.EnumConstantDeclaration;
 import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import dev.graphnous.scanner.model.Annotation;
 import dev.graphnous.scanner.model.Class;
@@ -43,6 +45,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -80,6 +83,17 @@ public class JavaClassParser {
      * parsed with {@link #parse}.
      */
     public JavaTypeIndex index(final Collection<Path> sourcePaths) {
+        return index(sourcePaths, List.of());
+    }
+
+    /**
+     * @param libraries the jars of the libraries the sources use, to
+     *                  resolve the methods and fields of their types
+     */
+    public JavaTypeIndex index(
+        final Collection<Path> sourcePaths,
+        final Collection<Path> libraries
+    ) {
         final var files = sourcePaths.parallelStream()
             .map(this::indexFile)
             .flatMap(Optional::stream)
@@ -89,6 +103,7 @@ public class JavaClassParser {
             files.stream().flatMap(file -> file.types().stream()).toList(),
             files.stream().map(IndexedFile::packageName).filter(name -> !name.isEmpty()).toList(),
             files.stream().map(IndexedFile::sourceRoot).flatMap(Optional::stream).toList(),
+            libraries,
             languageLevel
         );
     }
@@ -317,21 +332,135 @@ public class JavaClassParser {
             annotations.annotations(declaration.getAnnotations())
         );
 
-        // Member types; types declared in a method, an anonymous class or
-        // the body of an enum constant are left out, see isNamed
-        clazz.setClasses(
-            declaration.getMembers()
-                .stream()
-                .filter(TypeDeclaration.class::isInstance)
-                .map(member -> {
-                    final var nested = toClass(resolver, annotations, bodies, (TypeDeclaration<?>) member);
-                    nested.setNesting(Class.Nesting.MEMBER);
-                    return nested;
-                })
-                .collect(Collectors.toCollection(ArrayList::new))
-        );
+        clazz.setClasses(nestedClasses(resolver, annotations, bodies, declaration));
 
         return clazz;
+    }
+
+    /**
+     * The member classes of the class, followed by the local and anonymous
+     * classes declared in its methods, fields and initializers.
+     */
+    private List<Class> nestedClasses(
+        final JavaTypeResolver resolver,
+        final JavaAnnotationParser annotations,
+        final JavaBodyParser bodies,
+        final Node declaration
+    ) {
+        final var classes = new ArrayList<Class>();
+
+        JavaLocalClasses.members(declaration).forEach(member -> {
+            if (member instanceof TypeDeclaration<?> type) {
+                final var nested = toClass(resolver, annotations, bodies, type);
+                nested.setNesting(Class.Nesting.MEMBER);
+                classes.add(nested);
+            }
+        });
+
+        resolver.localClasses().classesOf(declaration).forEach(local -> {
+            final var nested = local instanceof TypeDeclaration<?> type
+                ? toClass(resolver, annotations, bodies, type)
+                : toAnonymousClass(resolver, annotations, bodies, local);
+
+            nested.setNesting(local instanceof TypeDeclaration<?> ? Class.Nesting.LOCAL : Class.Nesting.ANONYMOUS);
+
+            JavaLocalClasses.enclosingCallable(local)
+                .map(callable -> enclosingMethodName(resolver, callable))
+                .ifPresent(nested::setEnclosingMethod);
+
+            classes.add(nested);
+        });
+
+        return classes;
+    }
+
+    /**
+     * An anonymous class, named after its binary name, e.g. {@code 1} for
+     * {@code com.example.Outer$1}, with the class it extends or the
+     * interface it implements.
+     */
+    private Class toAnonymousClass(
+        final JavaTypeResolver resolver,
+        final JavaAnnotationParser annotations,
+        final JavaBodyParser bodies,
+        final Node declaration
+    ) {
+        final var clazz = new Class();
+        final var qualifiedName = resolver.anonymousName(declaration).orElseThrow();
+
+        clazz.setName(qualifiedName.substring(qualifiedName.lastIndexOf('$') + 1));
+        clazz.setQualifiedName(qualifiedName);
+        clazz.setKind(Class.Kind.CLASS);
+
+        JavaLocations.locate(declaration, clazz);
+
+        switch (declaration) {
+            case ObjectCreationExpr creation -> {
+                final var supertype = resolver.typeRef(creation.getType(), creation);
+
+                if (isInterface(creation.getType())) {
+                    clazz.setInterfaces(new ArrayList<>(List.of(supertype)));
+                } else {
+                    clazz.setSuperClasses(new ArrayList<>(List.of(supertype)));
+                }
+            }
+            case EnumConstantDeclaration constant -> constant.findAncestor(EnumDeclaration.class).ifPresent(enumeration -> {
+                final var supertype = new TypeRef();
+                supertype.setName(resolver.qualifiedName(enumeration));
+                supertype.setReferences(new LinkedHashSet<>(List.of(supertype.getName())));
+                clazz.setSuperClasses(new ArrayList<>(List.of(supertype)));
+            });
+            default -> {
+            }
+        }
+
+        clazz.setMethods(methods(resolver, annotations, bodies, clazz, declaration));
+        clazz.setFields(fields(resolver, annotations, clazz, declaration));
+        clazz.setClasses(nestedClasses(resolver, annotations, bodies, declaration));
+
+        return clazz;
+    }
+
+    /**
+     * Whether the type is an interface, as far as the symbol solver can
+     * tell; a type it cannot resolve is taken to be a class.
+     */
+    private static boolean isInterface(final ClassOrInterfaceType type) {
+        try {
+            return type.resolve().asReferenceType().getTypeDeclaration().map(declaration -> declaration.isInterface()).orElse(false);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * The qualified name of a method or constructor, in whatever class it
+     * is declared, see {@link #qualifiedName(JavaTypeResolver, String, String, NodeList)}.
+     */
+    static String enclosingMethodName(
+        final JavaTypeResolver resolver,
+        final Node callable
+    ) {
+        final var parent = callable.getParentNode().orElseThrow();
+        final var typeName = parent instanceof TypeDeclaration<?> type
+            ? resolver.qualifiedName(type)
+            : resolver.anonymousName(parent).orElseThrow();
+
+        return switch (callable) {
+            case CompactConstructorDeclaration constructor -> qualifiedName(
+                resolver,
+                typeName,
+                constructor.getNameAsString(),
+                ((RecordDeclaration) parent).getParameters()
+            );
+            case CallableDeclaration<?> declaration -> qualifiedName(
+                resolver,
+                typeName,
+                declaration.getNameAsString(),
+                declaration.getParameters()
+            );
+            default -> throw new IllegalArgumentException("Not a method or constructor: " + callable);
+        };
     }
 
     private static Class.Kind kind(final TypeDeclaration<?> declaration) {
@@ -423,11 +552,11 @@ public class JavaClassParser {
         final JavaAnnotationParser annotations,
         final JavaBodyParser bodies,
         final Class clazz,
-        final TypeDeclaration<?> declaration
+        final Node declaration
     ) {
         final var methods = new ArrayList<Method>();
 
-        declaration.getMembers().forEach(member -> {
+        JavaLocalClasses.members(declaration).forEach(member -> {
             if (member instanceof CallableDeclaration<?> callable) {
                 // Methods and constructors
                 methods.add(method(
@@ -535,11 +664,20 @@ public class JavaClassParser {
         method.setParameters(new ArrayList<>(parameters));
         method.setAnnotations(new ArrayList<>(annotations.annotations(declaration.getAnnotations())));
 
-        switch (declaration) {
-            case MethodDeclaration methodDeclaration -> methodDeclaration.getBody().ifPresent(body -> bodies.parse(body, method));
-            case ConstructorDeclaration constructor -> bodies.parse(constructor.getBody(), method);
-            case CompactConstructorDeclaration constructor -> bodies.parse(constructor.getBody(), method);
-            default -> {
+        // What the methods of an anonymous class declared in a method use
+        // belongs to that method, see JavaBodyParser
+        final var inMethod = declaration.getParentNode()
+            .filter(JavaLocalClasses::isAnonymous)
+            .flatMap(JavaLocalClasses::enclosingCallable)
+            .isPresent();
+
+        if (!inMethod) {
+            switch (declaration) {
+                case MethodDeclaration methodDeclaration -> methodDeclaration.getBody().ifPresent(body -> bodies.parse(body, method));
+                case ConstructorDeclaration constructor -> bodies.parse(constructor.getBody(), method);
+                case CompactConstructorDeclaration constructor -> bodies.parse(constructor.getBody(), method);
+                default -> {
+                }
             }
         }
 
@@ -648,11 +786,11 @@ public class JavaClassParser {
         final JavaTypeResolver resolver,
         final JavaAnnotationParser annotations,
         final Class clazz,
-        final TypeDeclaration<?> declaration
+        final Node declaration
     ) {
         final var fields = new ArrayList<Field>();
 
-        declaration.getMembers().forEach(member -> {
+        JavaLocalClasses.members(declaration).forEach(member -> {
             if (member instanceof FieldDeclaration field) {
                 // The type of the variable includes brackets written after
                 // its name, as in int values[]

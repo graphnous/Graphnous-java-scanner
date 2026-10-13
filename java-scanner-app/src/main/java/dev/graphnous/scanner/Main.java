@@ -1,12 +1,34 @@
 package dev.graphnous.scanner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.graphnous.scanner.java.maven.MavenRemote;
+import dev.graphnous.scanner.java.maven.MavenRepository;
+import dev.graphnous.scanner.java.maven.MavenSettings;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
 import dev.graphnous.scanner.model.ScanTarget;
 
+import java.io.File;
+import java.net.URI;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class Main {
+
+    /**
+     * Where the image of the scanner looks for a Maven repository first,
+     * so a volume mounted there is used without an argument.
+     */
+    static final Path IMAGE_MAVEN_REPOSITORY = Path.of("/maven-repository");
+
+    /**
+     * The Maven settings the image of the scanner reads, when they exist,
+     * so settings mounted there are used without an argument.
+     */
+    static final Path IMAGE_MAVEN_SETTINGS = Path.of("/maven-settings/settings.xml");
 
     static void main(final String[] args) {
         final var options = parseArguments(args);
@@ -31,8 +53,12 @@ public class Main {
         );
         log.detail("Output: " + options.output());
 
-        final var result = new JavaScanner(options.javaVersion(), log)
-            .scan(options.repository(), target);
+        final var result = new JavaScanner(
+            options.javaVersion(),
+            log,
+            options.classpath(),
+            mavenRepository(options, log)
+        ).scan(options.repository(), target);
 
         final var modules = result.getModules();
 
@@ -45,11 +71,65 @@ public class Main {
         new ScanResultWriter(new ObjectMapper()).write(result, options.output());
     }
 
-    private static Options parseArguments(final String[] args) {
+    /**
+     * The local Maven repository: the one given, else the one of the image
+     * when it exists, else {@code ~/.m2/repository}. To download into, it
+     * is created when it does not exist.
+     */
+    static MavenRepository mavenRepository(
+        final Options options,
+        final ScanLog log
+    ) {
+        final var location = options.mavenRepository() != null
+            ? options.mavenRepository()
+            : Files.isDirectory(IMAGE_MAVEN_REPOSITORY)
+                ? IMAGE_MAVEN_REPOSITORY
+                : Path.of(System.getProperty("user.home", ""), ".m2", "repository");
+
+        if (!options.downloadDependencies()) {
+            return MavenRepository.at(location);
+        }
+
+        final var remotes = mavenRemotes(options, System::getenv);
+
+        log.detail(
+            "Downloading missing libraries into " + location + " from "
+            + remotes.stream()
+                .map(remote -> remote + (remote.hasHeaders() ? " with credentials" : ""))
+                .collect(Collectors.joining(", "))
+        );
+
+        return MavenRepository.create(location).downloadingFrom(remotes);
+    }
+
+    /**
+     * The remote repositories the Maven settings configure, given or else
+     * those of the image when they exist; without settings, the one of
+     * {@code --maven-remote}, Maven Central by default.
+     */
+    static List<MavenRemote> mavenRemotes(
+        final Options options,
+        final Function<String, String> environment
+    ) {
+        final var settings = options.mavenSettings() != null
+            ? options.mavenSettings()
+            : Files.isRegularFile(IMAGE_MAVEN_SETTINGS) ? IMAGE_MAVEN_SETTINGS : null;
+
+        return settings == null
+            ? List.of(new MavenRemote(options.mavenRemote()))
+            : MavenSettings.remotes(settings, options.mavenRemote(), environment);
+    }
+
+    static Options parseArguments(final String[] args) {
         Path repository = null;
         String target = null;
         Path output = null;
         String javaVersion = null;
+        List<Path> classpath = List.of();
+        Path mavenRepository = null;
+        var downloadDependencies = false;
+        var mavenRemote = MavenRemote.MAVEN_CENTRAL;
+        Path mavenSettings = null;
         var verbose = false;
 
         for (int i = 0; i < args.length; i++) {
@@ -76,6 +156,30 @@ public class Main {
                         args,
                         ++i,
                         "--java-version"
+                    );
+                }
+                case "--classpath" -> {
+                    // Separated as the java command separates them: by :
+                    // on Linux and macOS, by ; on Windows
+                    classpath = Arrays.stream(requireValue(args, ++i, "--classpath").split(File.pathSeparator))
+                        .filter(entry -> !entry.isBlank())
+                        .map(Path::of)
+                        .toList();
+                }
+                case "--maven-repository" -> {
+                    mavenRepository = Path.of(
+                        requireValue(args, ++i, "--maven-repository")
+                    );
+                }
+                case "--download-dependencies" -> downloadDependencies = true;
+                case "--maven-remote" -> {
+                    mavenRemote = URI.create(
+                        requireValue(args, ++i, "--maven-remote")
+                    );
+                }
+                case "--maven-settings" -> {
+                    mavenSettings = Path.of(
+                        requireValue(args, ++i, "--maven-settings")
                     );
                 }
                 case "--verbose" -> verbose = true;
@@ -111,6 +215,11 @@ public class Main {
             target,
             output,
             javaVersion,
+            classpath,
+            mavenRepository,
+            downloadDependencies,
+            mavenRemote,
+            mavenSettings,
             verbose
         );
     }
@@ -129,11 +238,16 @@ public class Main {
         return args[index];
     }
 
-    private record Options(
+    record Options(
         Path repository,
         String target,
         Path output,
         String javaVersion,
+        List<Path> classpath,
+        Path mavenRepository,
+        boolean downloadDependencies,
+        URI mavenRemote,
+        Path mavenSettings,
         boolean verbose
     ) {}
 }

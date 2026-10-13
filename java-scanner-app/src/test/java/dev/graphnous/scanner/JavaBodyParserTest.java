@@ -1,5 +1,6 @@
 package dev.graphnous.scanner;
 
+import dev.graphnous.scanner.java.maven.LocalRepository;
 import dev.graphnous.scanner.model.Call;
 import dev.graphnous.scanner.model.FieldAccess;
 import dev.graphnous.scanner.model.File;
@@ -13,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -300,6 +302,212 @@ class JavaBodyParserTest {
                 tuple("com.example.Service.stop()", 8)
             );
         assertThat(methods.get(1).getCalls()).isEmpty();
+    }
+
+    @Test
+    void resolvesCallsIntoLocalAndAnonymousClasses() throws IOException {
+        final var service = write("com/example/Service.java", """
+            package com.example;
+
+            class Service {
+                Runnable onStart = new Runnable() {
+                    public void run() {
+                        start();
+                    }
+                };
+
+                int run() {
+                    class Counter {
+                        int count;
+
+                        int next() {
+                            return ++count + stop();
+                        }
+                    }
+
+                    Counter counter = new Counter();
+                    return counter.next();
+                }
+
+                void start() { }
+
+                int stop() { return 0; }
+            }
+            """);
+
+        final var file = parse(service, service);
+        final var classes = file.getClasses().getFirst().getClasses();
+
+        // The method of a local class has what its body uses, not the
+        // method that declares the class
+        assertThat(method(file, "run").getCalls())
+            .extracting(Call::getKind, Call::getTarget)
+            .containsExactly(
+                tuple(Call.Kind.CONSTRUCTOR, "com.example.Service$1Counter.Counter()"),
+                tuple(Call.Kind.METHOD, "com.example.Service$1Counter.next()")
+            );
+        assertThat(method(file, "run").getTypeUses())
+            .extracting(TypeUse::getTarget)
+            .containsExactly("com.example.Service$1Counter");
+
+        assertThat(classes)
+            .extracting(clazz -> clazz.getQualifiedName())
+            .containsExactly("com.example.Service$1", "com.example.Service$1Counter");
+
+        final var next = classes.get(1).getMethods().getFirst();
+
+        assertThat(next.getQualifiedName()).isEqualTo("com.example.Service$1Counter.next()");
+        assertThat(next.getCalls()).extracting(Call::getTarget).containsExactly("com.example.Service.stop()");
+        assertThat(next.getFieldAccesses())
+            .extracting(FieldAccess::getTarget, FieldAccess::getAccess)
+            .containsExactly(tuple("com.example.Service$1Counter.count", FieldAccess.Access.READ_WRITE));
+
+        // An anonymous class outside a method has what its methods use
+        assertThat(classes.getFirst().getMethods().getFirst().getCalls())
+            .extracting(Call::getTarget)
+            .containsExactly("com.example.Service.start()");
+    }
+
+    @Test
+    void resolvesCallsIntoTheJarsOfLibraries() throws IOException {
+        final var jar = new LocalRepository(directory.resolve("m2")).jar("org.example", "client", "1.0", Map.of(
+            "org/example/client/Client.java", """
+                package org.example.client;
+
+                public class Client {
+                    public static Client connect(String url) { return new Client(); }
+
+                    public Response send(Request request) { return null; }
+                }
+                """,
+            "org/example/client/Request.java", "package org.example.client; public class Request { }",
+            "org/example/client/Response.java", "package org.example.client; public class Response { public int status; }"
+        ));
+        final var service = write("src/com/example/Service.java", """
+            package com.example;
+
+            import org.example.client.*;
+
+            class Service {
+                int run(Request request) {
+                    return Client.connect("http://localhost").send(request).status;
+                }
+            }
+            """);
+
+        final var file = new File();
+        parser.parse(service, file, parser.index(List.of(service), List.of(jar)));
+        final var run = method(file, "run");
+
+        assertThat(run.getCalls())
+            .extracting(Call::getTarget, Call::getResolved)
+            .containsExactly(
+                tuple("org.example.client.Client.send(org.example.client.Request)", true),
+                tuple("org.example.client.Client.connect(java.lang.String)", true)
+            );
+        assertThat(run.getFieldAccesses())
+            .extracting(FieldAccess::getTarget)
+            .containsExactly("org.example.client.Response.status");
+
+        // The wildcard import of the library resolves the parameter type
+        assertThat(run.getParameters().getFirst().getType().getName()).isEqualTo("org.example.client.Request");
+    }
+
+    @Test
+    void resolvesOverloadsForArraysOfEachPrimitiveTypeTheSameEachTime() throws IOException {
+        final var arrays = write("com/example/Arrays2.java", """
+            package com.example;
+
+            public class Arrays2 {
+                public static int[] copy(int[] a) { return a; }
+                public static long[] copy(long[] a) { return a; }
+                public static double[] copy(double[] a) { return a; }
+                public static Integer[] copy(Integer[] a) { return a; }
+                public static Object[] copy(Object[] a) { return a; }
+            }
+            """);
+        final var service = write("com/example/Service.java", """
+            package com.example;
+
+            class Service {
+                void run(int[] ints, long[] longs, Integer[] boxed, String[] strings) {
+                    Arrays2.copy(ints);
+                    Arrays2.copy(longs);
+                    Arrays2.copy((double[]) null);
+                    Arrays2.copy(boxed);
+                    Arrays2.copy(strings);
+                    Arrays2.copy(Arrays2.copy(ints));
+                }
+            }
+            """);
+
+        // The symbol solver picks one of these at random, see JavaBodyParser
+        for (int i = 0; i < 5; i++) {
+            assertThat(method(parse(service, arrays, service), "run").getCalls())
+                .extracting(Call::getTarget)
+                .containsExactly(
+                    "com.example.Arrays2.copy(int[])",
+                    "com.example.Arrays2.copy(long[])",
+                    "com.example.Arrays2.copy(double[])",
+                    "com.example.Arrays2.copy(java.lang.Integer[])",
+                    "com.example.Arrays2.copy(java.lang.Object[])",
+                    "com.example.Arrays2.copy(int[])",
+                    "com.example.Arrays2.copy(int[])"
+                );
+        }
+    }
+
+    @Test
+    void resolvesThePatternVariablesOfEarlierStatements() throws IOException {
+        final var service = write("com/example/Service.java", """
+            package com.example;
+
+            class Service {
+                String run(Object value) {
+                    String text = "";
+                    if (!(value instanceof Order order)) {
+                        return text;
+                    }
+                    return order.id();
+                }
+            }
+
+            record Order(String id) { }
+            """);
+
+        assertThat(method(parse(service, service), "run").getCalls())
+            .extracting(Call::getTarget, Call::getResolved)
+            .containsExactly(tuple("com.example.Order.id()", true));
+    }
+
+    @Test
+    void usesTheCopyOfBlockStmtContextThatResolvesNamesInLongBlocks() throws IOException {
+        final var context = com.github.javaparser.symbolsolver.javaparsermodel.contexts.BlockStmtContext.class;
+
+        // The class of the scanner, not the one of the library jar
+        assertThat(context.getProtectionDomain().getCodeSource().getLocation().getPath()).doesNotEndWith(".jar");
+
+        final var statements = new StringBuilder();
+        for (int i = 0; i < 3_000; i++) {
+            statements.append("        total = add(total, ").append(i).append(");\n");
+        }
+
+        final var service = write("com/example/Service.java", """
+            package com.example;
+
+            class Service {
+                int run() {
+                    int total = 0;
+            %s        return total;
+                }
+
+                int add(int a, int b) { return a + b; }
+            }
+            """.formatted(statements));
+
+        assertThat(method(parse(service, service), "run").getCalls())
+            .hasSize(3_000)
+            .allSatisfy(call -> assertThat(call.getTarget()).isEqualTo("com.example.Service.add(int, int)"));
     }
 
     private Path write(final String name, final String source) throws IOException {

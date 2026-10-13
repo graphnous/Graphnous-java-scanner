@@ -5,6 +5,23 @@
 #     ghcr.io/graphnous/graphnous-java-scanner:0.1.0 \
 #     --path /repository --target . --output /output/scan-result.json
 #
+# To resolve calls into the libraries of the project, the scanner reads
+# their jars from the Maven repository at /maven-repository. Mount a volume
+# there and add --download-dependencies to have the scanner download what
+# it misses from Maven Central (--maven-remote for another repository);
+# the volume keeps them for the next scan:
+#   -v graphnous-maven:/maven-repository ... --download-dependencies
+# For private repositories, mount a Maven settings.xml at
+# /maven-settings/settings.xml (or pass --maven-settings): its mirrors, the
+# repositories of its active profiles and the credentials of its servers
+# are used, and ${env.NAME} in it reads environment variables, e.g.
+#   -v ./settings.xml:/maven-settings/settings.xml:ro -e NEXUS_TOKEN=...
+# Repositories the poms of the scanned project declare are never used.
+# Or mount a repository a build filled, read-only, without downloading:
+#   -v "$HOME/.m2/repository:/maven-repository:ro"
+# Or pass the jars, e.g. as mvn dependency:build-classpath lists them:
+#   --classpath a.jar:b.jar
+#
 # The Graphnous server instead overrides the entrypoint with the full
 # command from its configuration: java -jar /opt/graphnous/java-scanner.jar ...
 
@@ -25,7 +42,9 @@ FROM eclipse-temurin:25-jre
 COPY --from=build /build/java-scanner-app/target/java-scanner.jar /opt/graphnous/java-scanner.jar
 
 # Scans run as an unprivileged user; the repository is mounted read-only
-RUN useradd --system --uid 10001 --no-create-home scanner
+RUN useradd --system --uid 10001 --no-create-home scanner \
+    && mkdir /maven-repository \
+    && chown scanner /maven-repository
 USER scanner
 
 ENTRYPOINT ["java", "-jar", "/opt/graphnous/java-scanner.jar"]
