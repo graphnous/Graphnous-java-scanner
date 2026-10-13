@@ -5,6 +5,12 @@
 #     ghcr.io/graphnous/graphnous-java-scanner:0.1.0 \
 #     --path /repository --target . --output /output/scan-result.json
 #
+# To resolve calls into the libraries of the project, mount the local Maven
+# repository its build downloaded them to, with
+#   -v "$HOME/.m2/repository:/maven:ro" ... --maven-repository /maven
+# or pass the jars, e.g. as mvn dependency:build-classpath lists them, with
+#   --classpath a.jar:b.jar
+#
 # The Graphnous server instead overrides the entrypoint with the full
 # command from its configuration: java -jar /opt/graphnous/java-scanner.jar ...
 

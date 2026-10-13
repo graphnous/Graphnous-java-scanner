@@ -176,10 +176,23 @@ public class JavaFileDetector implements FileDetector {
             final ScanTarget target,
             final List<Module> modules
     ) {
+        return index(repository, target, modules, List.of());
+    }
+
+    /**
+     * @param libraries the jars of the libraries the modules use
+     */
+    public JavaTypeIndex index(
+            final Path repository,
+            final ScanTarget target,
+            final List<Module> modules,
+            final List<Path> libraries
+    ) {
         return classParser.index(
                 modules.stream()
                         .flatMap(module -> findSources(repository, target, module).stream())
-                        .toList()
+                        .toList(),
+                libraries
         );
     }
 

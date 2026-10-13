@@ -80,6 +80,17 @@ public class JavaClassParser {
      * parsed with {@link #parse}.
      */
     public JavaTypeIndex index(final Collection<Path> sourcePaths) {
+        return index(sourcePaths, List.of());
+    }
+
+    /**
+     * @param libraries the jars of the libraries the sources use, to
+     *                  resolve the methods and fields of their types
+     */
+    public JavaTypeIndex index(
+        final Collection<Path> sourcePaths,
+        final Collection<Path> libraries
+    ) {
         final var files = sourcePaths.parallelStream()
             .map(this::indexFile)
             .flatMap(Optional::stream)
@@ -89,6 +100,7 @@ public class JavaClassParser {
             files.stream().flatMap(file -> file.types().stream()).toList(),
             files.stream().map(IndexedFile::packageName).filter(name -> !name.isEmpty()).toList(),
             files.stream().map(IndexedFile::sourceRoot).flatMap(Optional::stream).toList(),
+            libraries,
             languageLevel
         );
     }

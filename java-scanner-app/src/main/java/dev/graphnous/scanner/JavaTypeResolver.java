@@ -36,8 +36,10 @@ import java.util.stream.Collectors;
  *     <li>single-type imports,</li>
  *     <li>scanned types in the package of the file,</li>
  *     <li>{@code java.lang},</li>
- *     <li>scanned and JDK types of on-demand imports.</li>
+ *     <li>scanned, JDK and library types of on-demand imports.</li>
  * </ol>
+ * Library types are known when the jars of the libraries are available,
+ * see {@link JavaTypeIndex}.
  * A type found in none of these comes from a library. When the file has
  * exactly one on-demand import of a library package, e.g.
  * {@code import org.springframework.web.bind.annotation.*}, the type is
@@ -310,7 +312,9 @@ class JavaTypeResolver {
             .stream()
             .filter(declaration -> !declaration.isStatic() && declaration.isAsterisk())
             .map(ImportDeclaration::getNameAsString)
-            .map(imported -> scannedType(imported, name).or(() -> jdkType(imported, name)))
+            .map(imported -> scannedType(imported, name)
+                .or(() -> jdkType(imported, name))
+                .or(() -> libraryType(imported, name)))
             .flatMap(Optional::stream)
             .findFirst();
     }
@@ -341,6 +345,21 @@ class JavaTypeResolver {
         final var qualifiedName = qualify(packageName, name);
 
         return index.containsType(qualifiedName)
+            ? Optional.of(qualifiedName)
+            : Optional.empty();
+    }
+
+    /**
+     * The type when a library on the classpath of the scan has it; see
+     * {@link JavaTypeIndex#containsLibraryType}.
+     */
+    private Optional<String> libraryType(
+        final String packageName,
+        final String name
+    ) {
+        final var qualifiedName = packageName + "." + name;
+
+        return index.containsLibraryType(qualifiedName)
             ? Optional.of(qualifiedName)
             : Optional.empty();
     }

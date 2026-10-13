@@ -1,10 +1,14 @@
 package dev.graphnous.scanner;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.graphnous.scanner.java.maven.MavenRepository;
 import dev.graphnous.scanner.language.JavaLanguageLevel;
 import dev.graphnous.scanner.model.ScanTarget;
 
+import java.io.File;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 
 public class Main {
 
@@ -31,8 +35,14 @@ public class Main {
         );
         log.detail("Output: " + options.output());
 
-        final var result = new JavaScanner(options.javaVersion(), log)
-            .scan(options.repository(), target);
+        final var result = new JavaScanner(
+            options.javaVersion(),
+            log,
+            options.classpath(),
+            options.mavenRepository() == null
+                ? MavenRepository.userDefault()
+                : MavenRepository.at(options.mavenRepository())
+        ).scan(options.repository(), target);
 
         final var modules = result.getModules();
 
@@ -50,6 +60,8 @@ public class Main {
         String target = null;
         Path output = null;
         String javaVersion = null;
+        List<Path> classpath = List.of();
+        Path mavenRepository = null;
         var verbose = false;
 
         for (int i = 0; i < args.length; i++) {
@@ -76,6 +88,19 @@ public class Main {
                         args,
                         ++i,
                         "--java-version"
+                    );
+                }
+                case "--classpath" -> {
+                    // Separated as the java command separates them: by :
+                    // on Linux and macOS, by ; on Windows
+                    classpath = Arrays.stream(requireValue(args, ++i, "--classpath").split(File.pathSeparator))
+                        .filter(entry -> !entry.isBlank())
+                        .map(Path::of)
+                        .toList();
+                }
+                case "--maven-repository" -> {
+                    mavenRepository = Path.of(
+                        requireValue(args, ++i, "--maven-repository")
                     );
                 }
                 case "--verbose" -> verbose = true;
@@ -111,6 +136,8 @@ public class Main {
             target,
             output,
             javaVersion,
+            classpath,
+            mavenRepository,
             verbose
         );
     }
@@ -134,6 +161,8 @@ public class Main {
         String target,
         Path output,
         String javaVersion,
+        List<Path> classpath,
+        Path mavenRepository,
         boolean verbose
     ) {}
 }

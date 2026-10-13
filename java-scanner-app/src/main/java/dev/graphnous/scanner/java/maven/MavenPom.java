@@ -20,9 +20,10 @@ import java.util.regex.Pattern;
  * A {@code pom.xml} with its local parents, read without Maven: enough to
  * find properties, the coordinates of the project, its dependencies and
  * its source directories.
- * Parents that are not in the repository, such as
- * {@code spring-boot-starter-parent}, are not available, so what they
- * define is unknown.
+ * Parents that are neither in the repository nor in the local Maven
+ * repository (see {@link #read(Path, MavenRepository)}), such as
+ * {@code spring-boot-starter-parent} before it is downloaded, are not
+ * available, so what they define is unknown.
  */
 public final class MavenPom {
 
@@ -34,7 +35,14 @@ public final class MavenPom {
 
     private static final String BUILD_HELPER_PLUGIN = "build-helper-maven-plugin";
 
+    /**
+     * How deep BOMs that import other BOMs are followed.
+     */
+    private static final int MAX_IMPORT_DEPTH = 5;
+
     private final Path path;
+
+    private final MavenRepository repository;
 
     /**
      * This pom followed by its parents, nearest first, so a module
@@ -44,10 +52,12 @@ public final class MavenPom {
 
     private MavenPom(
         final Path path,
-        final List<Element> chain
+        final List<Element> chain,
+        final MavenRepository repository
     ) {
         this.path = path;
         this.chain = chain;
+        this.repository = repository;
     }
 
     /**
@@ -56,6 +66,19 @@ public final class MavenPom {
      * @throws IllegalStateException when a pom cannot be read or parsed
      */
     public static MavenPom read(final Path pom) {
+        return read(pom, MavenRepository.NONE);
+    }
+
+    /**
+     * Reads the pom and its parents, from the repository or else from the
+     * local Maven repository, which also has the BOMs the poms import.
+     *
+     * @throws IllegalStateException when a pom cannot be read or parsed
+     */
+    public static MavenPom read(
+        final Path pom,
+        final MavenRepository repository
+    ) {
         final var chain = new ArrayList<Element>();
         final var visited = new HashSet<Path>();
 
@@ -69,10 +92,15 @@ public final class MavenPom {
             chain.add(project);
 
             current = child(project, "parent")
-                .flatMap(parent -> parentPom(currentPom, parent));
+                .flatMap(parent -> parentPom(currentPom, parent)
+                    .or(() -> repository.pom(
+                        text(parent, "groupId").orElse(""),
+                        text(parent, "artifactId").orElse(""),
+                        text(parent, "version").orElse(null)
+                    )));
         }
 
-        return new MavenPom(pom, List.copyOf(chain));
+        return new MavenPom(pom, List.copyOf(chain), repository);
     }
 
     public Path path() {
@@ -143,16 +171,34 @@ public final class MavenPom {
      * The dependencies of the project, including those it inherits from
      * its parents. A dependency without a version gets the version of the
      * nearest {@code dependencyManagement} that has one, and without a
-     * scope the managed scope or {@code compile}. Versions that cannot be
-     * resolved, such as those managed by a BOM or a parent outside the
-     * repository, are left out.
+     * scope the managed scope or {@code compile}. Versions are also
+     * managed by the BOMs the poms import from the local Maven repository.
+     * Versions that cannot be resolved, such as those managed by a BOM or
+     * a parent that is in neither repository, are left out.
      */
     public List<MavenDependency> dependencies() {
+        return dependencies(false);
+    }
+
+    /**
+     * The dependencies a project that depends on this one gets as well:
+     * those in the {@code compile} and {@code runtime} scopes that are not
+     * optional, as Maven resolves them.
+     */
+    public List<MavenDependency> transitiveDependencies() {
+        return dependencies(true).stream()
+            .filter(dependency -> dependency.scope().equals("compile") || dependency.scope().equals("runtime"))
+            .toList();
+    }
+
+    private List<MavenDependency> dependencies(final boolean transitive) {
         final var dependencies = new LinkedHashMap<String, MavenDependency>();
 
         chain.forEach(project -> child(project, "dependencies")
             .map(element -> children(element, "dependency"))
             .orElseGet(List::of)
+            .stream()
+            .filter(element -> !transitive || !text(element, "optional").map(this::resolveOrKeep).orElse("").equals("true"))
             .forEach(element -> {
                 final var groupId = text(element, "groupId").map(this::resolveOrKeep).orElse("");
                 final var artifactId = text(element, "artifactId").map(this::resolveOrKeep).orElse("");
@@ -167,6 +213,7 @@ public final class MavenPom {
                         text(element, "version")
                             .or(() -> managed.flatMap(dependency -> text(dependency, "version")))
                             .flatMap(this::tryResolve)
+                            .or(() -> importedVersion(groupId, artifactId, 0))
                             .orElse(null),
                         text(element, "scope")
                             .or(() -> managed.flatMap(dependency -> text(dependency, "scope")))
@@ -258,6 +305,63 @@ public final class MavenPom {
             .map(source -> source.getTextContent().trim())
             .filter(source -> !source.isEmpty())
             .toList();
+    }
+
+    /**
+     * The version a BOM imported into the {@code dependencyManagement} of
+     * the poms manages, e.g. {@code spring-boot-dependencies}. BOMs are
+     * read from the local Maven repository.
+     */
+    private Optional<String> importedVersion(
+        final String groupId,
+        final String artifactId,
+        final int depth
+    ) {
+        if (!repository.exists() || depth >= MAX_IMPORT_DEPTH) {
+            return Optional.empty();
+        }
+
+        return chain.stream()
+            .flatMap(project -> child(project, "dependencyManagement")
+                .flatMap(management -> child(management, "dependencies"))
+                .map(element -> children(element, "dependency"))
+                .orElseGet(List::of)
+                .stream())
+            .filter(dependency -> text(dependency, "scope").map(this::resolveOrKeep).orElse("").equals("import"))
+            .map(dependency -> repository.pom(
+                text(dependency, "groupId").map(this::resolveOrKeep).orElse(""),
+                text(dependency, "artifactId").map(this::resolveOrKeep).orElse(""),
+                text(dependency, "version").flatMap(this::tryResolve).orElse(null)
+            ))
+            .flatMap(Optional::stream)
+            .map(repository::read)
+            .flatMap(Optional::stream)
+            .map(bom -> bom.managedVersion(groupId, artifactId, depth + 1))
+            .flatMap(Optional::stream)
+            .findFirst();
+    }
+
+    /**
+     * The version the {@code dependencyManagement} of the poms, or a BOM
+     * they import, gives the artifact. Maven applies it to the transitive
+     * dependencies of the project as well.
+     */
+    public Optional<String> managedVersion(
+        final String groupId,
+        final String artifactId
+    ) {
+        return managedVersion(groupId, artifactId, 0);
+    }
+
+    private Optional<String> managedVersion(
+        final String groupId,
+        final String artifactId,
+        final int depth
+    ) {
+        return managed(groupId, artifactId)
+            .flatMap(dependency -> text(dependency, "version"))
+            .flatMap(this::tryResolve)
+            .or(() -> importedVersion(groupId, artifactId, depth));
     }
 
     private Optional<Element> managed(
