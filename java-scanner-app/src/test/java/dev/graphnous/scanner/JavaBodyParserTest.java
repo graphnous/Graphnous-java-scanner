@@ -305,6 +305,70 @@ class JavaBodyParserTest {
     }
 
     @Test
+    void resolvesCallsIntoLocalAndAnonymousClasses() throws IOException {
+        final var service = write("com/example/Service.java", """
+            package com.example;
+
+            class Service {
+                Runnable onStart = new Runnable() {
+                    public void run() {
+                        start();
+                    }
+                };
+
+                int run() {
+                    class Counter {
+                        int count;
+
+                        int next() {
+                            return ++count + stop();
+                        }
+                    }
+
+                    Counter counter = new Counter();
+                    return counter.next();
+                }
+
+                void start() { }
+
+                int stop() { return 0; }
+            }
+            """);
+
+        final var file = parse(service, service);
+        final var classes = file.getClasses().getFirst().getClasses();
+
+        // The method of a local class has what its body uses, not the
+        // method that declares the class
+        assertThat(method(file, "run").getCalls())
+            .extracting(Call::getKind, Call::getTarget)
+            .containsExactly(
+                tuple(Call.Kind.CONSTRUCTOR, "com.example.Service$1Counter.Counter()"),
+                tuple(Call.Kind.METHOD, "com.example.Service$1Counter.next()")
+            );
+        assertThat(method(file, "run").getTypeUses())
+            .extracting(TypeUse::getTarget)
+            .containsExactly("com.example.Service$1Counter");
+
+        assertThat(classes)
+            .extracting(clazz -> clazz.getQualifiedName())
+            .containsExactly("com.example.Service$1", "com.example.Service$1Counter");
+
+        final var next = classes.get(1).getMethods().getFirst();
+
+        assertThat(next.getQualifiedName()).isEqualTo("com.example.Service$1Counter.next()");
+        assertThat(next.getCalls()).extracting(Call::getTarget).containsExactly("com.example.Service.stop()");
+        assertThat(next.getFieldAccesses())
+            .extracting(FieldAccess::getTarget, FieldAccess::getAccess)
+            .containsExactly(tuple("com.example.Service$1Counter.count", FieldAccess.Access.READ_WRITE));
+
+        // An anonymous class outside a method has what its methods use
+        assertThat(classes.getFirst().getMethods().getFirst().getCalls())
+            .extracting(Call::getTarget)
+            .containsExactly("com.example.Service.start()");
+    }
+
+    @Test
     void resolvesCallsIntoTheJarsOfLibraries() throws IOException {
         final var jar = new LocalRepository(directory.resolve("m2")).jar("org.example", "client", "1.0", Map.of(
             "org/example/client/Client.java", """

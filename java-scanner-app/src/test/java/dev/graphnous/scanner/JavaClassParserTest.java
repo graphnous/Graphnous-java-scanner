@@ -921,11 +921,15 @@ class JavaClassParserTest {
     }
 
     @Test
-    void leavesOutTypesWithoutAQualifiedName() throws IOException {
+    void namesLocalAndAnonymousClassesAsJavacDoes() throws IOException {
         final var file = parse("""
             package com.example;
 
             class Outer {
+                Runnable field = new Runnable() {
+                    public void run() { }
+                };
+
                 void run() {
                     record Point(int x) { }
                     class Helper { }
@@ -933,6 +937,11 @@ class JavaClassParserTest {
                         class InAnonymous { }
                         public void run() { }
                     };
+                    new Thread(new Runnable() { public void run() { } }) { };
+                }
+
+                void stop() {
+                    class Helper { }
                 }
 
                 enum Mode {
@@ -943,9 +952,55 @@ class JavaClassParserTest {
             }
             """);
 
+        // The names of the class files javac writes for the source
         assertThat(allClasses(file))
-            .extracting(Class::getQualifiedName)
-            .containsExactly("com.example.Outer", "com.example.Outer.Mode");
+            .extracting(Class::getName, Class::getQualifiedName, Class::getNesting, Class::getEnclosingMethod)
+            .containsExactly(
+                tuple("Outer", "com.example.Outer", Class.Nesting.TOP_LEVEL, null),
+                tuple("Mode", "com.example.Outer.Mode", Class.Nesting.MEMBER, null),
+                tuple("1", "com.example.Outer$Mode$1", Class.Nesting.ANONYMOUS, null),
+                tuple("InConstant", "com.example.Outer$Mode$1$InConstant", Class.Nesting.MEMBER, null),
+                tuple("1", "com.example.Outer$1", Class.Nesting.ANONYMOUS, null),
+                tuple("Point", "com.example.Outer$1Point", Class.Nesting.LOCAL, "com.example.Outer.run()"),
+                tuple("Helper", "com.example.Outer$1Helper", Class.Nesting.LOCAL, "com.example.Outer.run()"),
+                tuple("2", "com.example.Outer$2", Class.Nesting.ANONYMOUS, "com.example.Outer.run()"),
+                tuple("InAnonymous", "com.example.Outer$2$InAnonymous", Class.Nesting.MEMBER, null),
+                // The argument comes first, as javac attributes it first
+                tuple("3", "com.example.Outer$3", Class.Nesting.ANONYMOUS, "com.example.Outer.run()"),
+                tuple("4", "com.example.Outer$4", Class.Nesting.ANONYMOUS, "com.example.Outer.run()"),
+                tuple("Helper", "com.example.Outer$2Helper", Class.Nesting.LOCAL, "com.example.Outer.stop()")
+            );
+    }
+
+    @Test
+    void detectsTheSupertypesAndMethodsOfAnonymousClasses() throws IOException {
+        final var file = parse("""
+            package com.example;
+
+            class Outer {
+                void run() {
+                    new Thread() {
+                        @Override
+                        public void run() { }
+                    };
+                    new Runnable() {
+                        public void run() { }
+                    };
+                }
+            }
+            """);
+
+        final var anonymous = file.getClasses().getFirst().getClasses();
+
+        assertThat(anonymous)
+            .extracting(clazz -> names(clazz.getSuperClasses()), clazz -> names(clazz.getInterfaces()))
+            .containsExactly(
+                tuple(List.of("java.lang.Thread"), List.of()),
+                tuple(List.of(), List.of("java.lang.Runnable"))
+            );
+        assertThat(anonymous.getFirst().getMethods())
+            .extracting(Method::getQualifiedName)
+            .containsExactly("com.example.Outer$1.run()");
     }
 
     @Test

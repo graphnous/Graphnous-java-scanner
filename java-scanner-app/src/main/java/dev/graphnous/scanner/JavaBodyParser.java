@@ -30,6 +30,7 @@ import com.github.javaparser.resolution.MethodUsage;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedMethodLikeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.resolution.types.ResolvedType;
 import dev.graphnous.scanner.model.Call;
@@ -61,9 +62,9 @@ import java.util.stream.IntStream;
  * false. Field accesses that cannot be resolved are left out, as a name
  * alone does not tell a field from a variable.
  * <p>
- * Uses inside lambdas, anonymous classes and local classes declared in
- * the body belong to the method, as local and anonymous classes are not
- * in the scan result themselves. Creating an anonymous class is a use of
+ * Uses inside lambdas and anonymous classes declared in the body belong to
+ * the method, as the scan result defines; those of the methods of local
+ * classes belong to those methods. Creating an anonymous class is a use of
  * the type it extends or implements, of kind {@code OTHER}.
  */
 final class JavaBodyParser {
@@ -101,7 +102,31 @@ final class JavaBodyParser {
         final Node body,
         final Method method
     ) {
-        body.walk(node -> {
+        visit(body, method);
+    }
+
+    /**
+     * Handles the node and the nodes in it, in source order, except the
+     * classes declared in it: the methods of local classes and of the
+     * classes nested in anonymous classes have uses of their own.
+     */
+    private void visit(
+        final Node node,
+        final Method method
+    ) {
+        use(node, method);
+
+        node.getChildNodes()
+            .stream()
+            .filter(child -> !(child instanceof TypeDeclaration<?>))
+            .forEach(child -> visit(child, method));
+    }
+
+    private void use(
+        final Node node,
+        final Method method
+    ) {
+        {
             switch (node) {
                 case MethodCallExpr call -> {
                     call(method, call, Call.Kind.METHOD, target(call).or(() -> byArity(call)), () -> writtenName(call));
@@ -147,7 +172,7 @@ final class JavaBodyParser {
                 default -> {
                 }
             }
-        });
+        }
     }
 
     /**
@@ -629,15 +654,17 @@ final class JavaBodyParser {
         });
     }
 
-    private static Optional<String> fieldName(final ResolvedValueDeclaration declaration) {
+    private Optional<String> fieldName(final ResolvedValueDeclaration declaration) {
         if (declaration.isField()) {
             final var field = declaration.asField();
 
-            return Optional.of(field.declaringType().getQualifiedName() + "." + field.getName());
+            return Optional.of(typeName(field.declaringType()) + "." + field.getName());
         }
 
         if (declaration.isEnumConstant() && declaration.getType().isReferenceType()) {
-            return Optional.of(declaration.getType().asReferenceType().getQualifiedName() + "." + declaration.getName());
+            return declaration.getType().asReferenceType()
+                .getTypeDeclaration()
+                .map(type -> typeName(type) + "." + declaration.getName());
         }
 
         return Optional.empty();
@@ -686,7 +713,10 @@ final class JavaBodyParser {
 
             resolve(classType::resolve)
                 .filter(ResolvedType::isReferenceType)
-                .map(resolved -> resolved.asReferenceType().getQualifiedName())
+                .map(resolved -> resolved.asReferenceType()
+                    .getTypeDeclaration()
+                    .map(this::typeName)
+                    .orElseGet(resolved.asReferenceType()::getQualifiedName))
                 .ifPresentOrElse(
                     use::setTarget,
                     () -> {
@@ -728,35 +758,43 @@ final class JavaBodyParser {
             return resolvedName(declaration);
         }
 
-        // A method of a local or anonymous class has no name in the scan
-        // result, which leaves those classes out
         return declaredName(callable.get()).orElseThrow(() -> new IllegalStateException(
-            "Declared in a local or anonymous class: " + declaration.getName()
+            "Not declared in a class of its file: " + declaration.getName()
         ));
     }
 
     private Optional<String> declaredName(final CallableDeclaration<?> callable) {
-        if (!(callable.getParentNode().orElse(null) instanceof TypeDeclaration<?> type)
-            || !JavaClassParser.isNamed(type)) {
-            return Optional.empty();
-        }
-
-        return callable.findCompilationUnit().map(compilationUnit -> {
-            final var declaringResolver = resolvers.computeIfAbsent(
-                compilationUnit,
-                unit -> new JavaTypeResolver(unit, index)
-            );
-
-            return JavaClassParser.qualifiedName(
-                declaringResolver,
-                declaringResolver.qualifiedName(type),
-                callable.getNameAsString(),
-                callable.getParameters()
-            );
-        });
+        return callable.findCompilationUnit()
+            .flatMap(compilationUnit -> resolve(() -> JavaClassParser.enclosingMethodName(resolverOf(compilationUnit), callable)));
     }
 
-    private static String resolvedName(final ResolvedMethodLikeDeclaration declaration) {
+    /**
+     * The resolver of the file, to name what it declares as that file
+     * names it.
+     */
+    private JavaTypeResolver resolverOf(final CompilationUnit compilationUnit) {
+        return resolvers.computeIfAbsent(compilationUnit, unit -> new JavaTypeResolver(unit, index));
+    }
+
+    /**
+     * The qualified name of a resolved type: of a type the scan target
+     * declares as its file names it, which for local and anonymous classes
+     * is their binary name, e.g. {@code com.example.Outer$1}.
+     */
+    private String typeName(final ResolvedTypeDeclaration type) {
+        return resolve(type::toAst)
+            .flatMap(node -> node)
+            .flatMap(node -> node.findCompilationUnit().flatMap(compilationUnit -> {
+                final var declaringResolver = resolverOf(compilationUnit);
+
+                return node instanceof TypeDeclaration<?> declaration
+                    ? Optional.of(declaringResolver.qualifiedName(declaration))
+                    : declaringResolver.anonymousName(node);
+            }))
+            .orElseGet(type::getQualifiedName);
+    }
+
+    private String resolvedName(final ResolvedMethodLikeDeclaration declaration) {
         final var parameters = new StringBuilder();
 
         for (int i = 0; i < declaration.getNumberOfParams(); i++) {
@@ -771,7 +809,8 @@ final class JavaBodyParser {
             );
         }
 
-        return declaration.declaringType().getQualifiedName() + "." + declaration.getName() + "(" + parameters + ")";
+        // The type of a default constructor is in the scan target
+        return typeName(declaration.declaringType()) + "." + declaration.getName() + "(" + parameters + ")";
     }
 
     /**
