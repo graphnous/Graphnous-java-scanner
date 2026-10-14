@@ -20,6 +20,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.TreeSet;
+import java.util.concurrent.ForkJoinPool;
 import java.util.stream.Collectors;
 
 public class JavaFileDetector implements FileDetector {
@@ -42,6 +43,17 @@ public class JavaFileDetector implements FileDetector {
     private static final List<String> OUTPUT_DIRECTORIES = List.of(
         "target",
         "build"
+    );
+
+    /**
+     * The threads files are parsed on. Each resolves with its own type
+     * solver, which indexes every library jar and caches the sources it
+     * parses again, so a thread takes hundreds of megabytes for a project
+     * with a few hundred libraries; more threads take more memory without
+     * scanning faster.
+     */
+    private static final ForkJoinPool PARSING = new ForkJoinPool(
+            Math.min(2, Runtime.getRuntime().availableProcessors())
     );
 
     private final JavaClassParser classParser;
@@ -116,11 +128,15 @@ public class JavaFileDetector implements FileDetector {
         final var targetPath = repository.resolve(target.getPath()).normalize();
         final var layout = SourceLayout.of(targetPath.resolve(module.getPath()).normalize());
 
-        // Parsed in parallel; reported afterwards, in the order of the files
-        final var outcomes = findSources(repository, target, module)
+        final var sources = findSources(repository, target, module);
+
+        // Parsed in parallel, on the parsing threads only; reported
+        // afterwards, in the order of the files
+        final var outcomes = PARSING.submit(() -> sources
                 .parallelStream()
                 .map(file -> toFile(targetPath, layout, file, index))
-                .toList();
+                .toList()
+        ).join();
 
         outcomes.forEach(outcome -> {
             if (outcome.file() == null) {
