@@ -33,6 +33,7 @@ import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclar
 import com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.resolution.types.ResolvedType;
+import dev.graphnous.scanner.model.Argument;
 import dev.graphnous.scanner.model.Call;
 import dev.graphnous.scanner.model.FieldAccess;
 import dev.graphnous.scanner.model.Method;
@@ -62,12 +63,20 @@ import java.util.stream.IntStream;
  * false. Field accesses that cannot be resolved are left out, as a name
  * alone does not tell a field from a variable.
  * <p>
+ * A call lists what it passes: each argument as written, on one line, in
+ * the order written.
+ * <p>
  * Uses inside lambdas and anonymous classes declared in the body belong to
  * the method, as the scan result defines; those of the methods of local
  * classes belong to those methods. Creating an anonymous class is a use of
  * the type it extends or implements, of kind {@code OTHER}.
  */
 final class JavaBodyParser {
+
+    /**
+     * The most characters of an argument that are kept.
+     */
+    private static final int ARGUMENT_LENGTH = 200;
 
     private final JavaTypeResolver resolver;
 
@@ -129,7 +138,7 @@ final class JavaBodyParser {
         {
             switch (node) {
                 case MethodCallExpr call -> {
-                    call(method, call, Call.Kind.METHOD, target(call).or(() -> byArity(call)), () -> writtenName(call));
+                    call(method, call, Call.Kind.METHOD, call.getArguments(), target(call).or(() -> byArity(call)), () -> writtenName(call));
                     call.getTypeArguments().ifPresent(arguments ->
                         arguments.forEach(argument -> typeUses(method, argument, TypeUse.Kind.TYPE_ARGUMENT)));
                 }
@@ -142,6 +151,7 @@ final class JavaBodyParser {
                         method,
                         creation,
                         Call.Kind.CONSTRUCTOR,
+                        creation.getArguments(),
                         target(creation::resolve).or(() -> constructorByArity(declaration(creation.getType()), creation.getArguments().size())),
                         () -> constructorName(creation.getType())
                     );
@@ -152,11 +162,13 @@ final class JavaBodyParser {
                     method,
                     invocation,
                     Call.Kind.CONSTRUCTOR,
+                    invocation.getArguments(),
                     target(invocation::resolve).or(() -> constructorByArity(invoked(invocation), invocation.getArguments().size())),
                     () -> writtenName(invocation)
                 );
                 case MethodReferenceExpr reference ->
-                    call(method, reference, Call.Kind.METHOD_REFERENCE, target(reference::resolve), () -> writtenName(reference));
+                    // Passing a method on passes nothing to it
+                    call(method, reference, Call.Kind.METHOD_REFERENCE, List.of(), target(reference::resolve), () -> writtenName(reference));
                 case FieldAccessExpr access -> fieldAccess(method, access, access::resolve);
                 case NameExpr name -> fieldAccess(method, name, name::resolve);
                 case VariableDeclarationExpr variables -> typeUses(method, variables.getElementType(), TypeUse.Kind.LOCAL_VARIABLE);
@@ -176,6 +188,7 @@ final class JavaBodyParser {
     }
 
     /**
+     * @param arguments   what the call passes, in the order written
      * @param target      the qualified name of the method or constructor
      *                    called, when it is resolved
      * @param writtenName the target when it is not resolved
@@ -184,6 +197,7 @@ final class JavaBodyParser {
         final Method method,
         final Node node,
         final Call.Kind kind,
+        final List<Expression> arguments,
         final Optional<String> target,
         final Supplier<String> writtenName
     ) {
@@ -199,8 +213,31 @@ final class JavaBodyParser {
             }
         );
 
+        arguments.forEach(expression -> {
+            final var argument = new Argument();
+            argument.setValue(written(expression));
+
+            call.getArguments().add(argument);
+        });
+
         JavaLocations.locate(node, call);
         method.getCalls().add(call);
+    }
+
+    /**
+     * The expression as written, on one line; a long one, such as a lambda
+     * passed as a callback, is cut off and ends in "…".
+     */
+    private static String written(final Expression expression) {
+        final var source = expression.getTokenRange()
+            .map(Object::toString)
+            .orElseGet(expression::toString)
+            .strip()
+            .replaceAll("\\s+", " ");
+
+        return source.length() > ARGUMENT_LENGTH
+            ? source.substring(0, ARGUMENT_LENGTH - 1) + "…"
+            : source;
     }
 
     private Optional<String> target(final Supplier<? extends ResolvedMethodLikeDeclaration> resolve) {
