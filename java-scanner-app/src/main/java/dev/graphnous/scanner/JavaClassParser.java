@@ -22,10 +22,12 @@ import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.EnumConstantDeclaration;
 import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
+import com.github.javaparser.ast.body.InitializerDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
+import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import dev.graphnous.scanner.model.Annotation;
 import dev.graphnous.scanner.model.Class;
@@ -545,7 +547,8 @@ public class JavaClassParser {
      * Constructors are named after the type and have no return type, e.g.
      * {@code com.example.Order.Order(java.lang.String)}. Only declared
      * constructors are included, not the default constructor or the
-     * canonical constructor of a record that the compiler adds.
+     * canonical constructor of a record that the compiler adds, unless
+     * initializers use anything; see {@link #initializers}.
      */
     private static List<Method> methods(
         final JavaTypeResolver resolver,
@@ -556,7 +559,12 @@ public class JavaClassParser {
     ) {
         final var methods = new ArrayList<Method>();
 
-        JavaLocalClasses.members(declaration).forEach(member -> {
+        // The constructors that run the instance initializers: those that do
+        // not hand over to another one with this(...)
+        final var initializing = new ArrayList<Method>();
+        var hasConstructor = false;
+
+        for (final var member : JavaLocalClasses.members(declaration)) {
             if (member instanceof CallableDeclaration<?> callable) {
                 // Methods and constructors
                 methods.add(method(
@@ -570,6 +578,14 @@ public class JavaClassParser {
                     callable.getParameters(),
                     callable.getThrownExceptions()
                 ));
+
+                if (callable instanceof ConstructorDeclaration constructor) {
+                    hasConstructor = true;
+
+                    if (!delegates(constructor)) {
+                        initializing.add(methods.getLast());
+                    }
+                }
             } else if (member instanceof CompactConstructorDeclaration constructor
                 && declaration instanceof RecordDeclaration record) {
                 // The compact form of the canonical constructor takes the
@@ -585,6 +601,8 @@ public class JavaClassParser {
                     record.getParameters(),
                     constructor.getThrownExceptions()
                 ));
+                hasConstructor = true;
+                initializing.add(methods.getLast());
             } else if (member instanceof AnnotationMemberDeclaration element) {
                 methods.add(method(
                     resolver,
@@ -598,9 +616,132 @@ public class JavaClassParser {
                     new NodeList<>()
                 ));
             }
-        });
+        }
+
+        initializers(bodies, clazz, declaration, methods, initializing, hasConstructor);
 
         return methods;
+    }
+
+    /**
+     * Gives what initializers use to what runs them, before what its body
+     * uses:
+     * <ul>
+     * <li>instance field initializers and initializer blocks to each
+     * constructor that runs them, or the default constructor the compiler
+     * adds, e.g. {@code com.example.Order.Order()}, listed when they use
+     * anything;</li>
+     * <li>static field initializers, static initializer blocks, the fields of
+     * interfaces and the arguments of enum constants to a method
+     * {@code static} with the {@code STATIC} modifier, e.g.
+     * {@code com.example.Order.static()}, listed when they use
+     * anything.</li>
+     * </ul>
+     * Those of anonymous classes belong to what declares the class, see
+     * {@link JavaBodyParser}.
+     */
+    private static void initializers(
+        final JavaBodyParser bodies,
+        final Class clazz,
+        final Node declaration,
+        final List<Method> methods,
+        final List<Method> constructors,
+        final boolean hasConstructor
+    ) {
+        if (JavaLocalClasses.isAnonymous(declaration)) {
+            return;
+        }
+
+        final var isInterface = declaration instanceof ClassOrInterfaceDeclaration type && type.isInterface()
+            || declaration instanceof AnnotationDeclaration;
+
+        final var instance = new ArrayList<Node>();
+        final var statics = new ArrayList<Node>();
+
+        for (final var member : JavaLocalClasses.members(declaration)) {
+            if (member instanceof FieldDeclaration field) {
+                final var into = isInterface || field.isStatic() ? statics : instance;
+
+                field.getVariables().forEach(variable -> variable.getInitializer().ifPresent(into::add));
+            } else if (member instanceof InitializerDeclaration initializer) {
+                (initializer.isStatic() ? statics : instance).add(initializer.getBody());
+            }
+        }
+
+        if (declaration instanceof EnumDeclaration enumeration) {
+            enumeration.getEntries().forEach(entry -> statics.addAll(entry.getArguments()));
+        }
+
+        if (!instance.isEmpty()) {
+            if (hasConstructor) {
+                constructors.forEach(constructor -> use(bodies, constructor, instance));
+            } else {
+                final var name = ((NodeWithSimpleName<?>) declaration).getNameAsString();
+                final var constructor = new Method();
+
+                constructor.setName(name);
+                constructor.setQualifiedName(clazz.getQualifiedName() + "." + name + "()");
+                constructor.setKind(Method.Kind.CONSTRUCTOR);
+
+                if (use(bodies, constructor, instance)) {
+                    methods.addFirst(constructor);
+                }
+            }
+        }
+
+        if (!statics.isEmpty()) {
+            final var initializer = new Method();
+
+            initializer.setName("static");
+            initializer.setQualifiedName(clazz.getQualifiedName() + ".static()");
+            initializer.setKind(Method.Kind.METHOD);
+            initializer.setModifiers(new ArrayList<>(List.of(Modifier.STATIC)));
+
+            if (use(bodies, initializer, statics)) {
+                methods.add(initializer);
+            }
+        }
+    }
+
+    /**
+     * Adds what the nodes use to the method, before what it uses already.
+     *
+     * @return whether they use anything
+     */
+    private static boolean use(
+        final JavaBodyParser bodies,
+        final Method method,
+        final List<Node> nodes
+    ) {
+        final var uses = new Method();
+
+        nodes.forEach(node -> bodies.parse(node, uses));
+
+        method.setCalls(concat(uses.getCalls(), method.getCalls()));
+        method.setFieldAccesses(concat(uses.getFieldAccesses(), method.getFieldAccesses()));
+        method.setTypeUses(concat(uses.getTypeUses(), method.getTypeUses()));
+
+        return !uses.getCalls().isEmpty() || !uses.getFieldAccesses().isEmpty() || !uses.getTypeUses().isEmpty();
+    }
+
+    private static <T> List<T> concat(final List<T> first, final List<T> second) {
+        final var result = new ArrayList<T>(first);
+
+        if (second != null) {
+            result.addAll(second);
+        }
+
+        return result;
+    }
+
+    /**
+     * Whether the constructor hands over to another one of its class with
+     * this(...), which runs the initializers instead.
+     */
+    private static boolean delegates(final ConstructorDeclaration constructor) {
+        return constructor.getBody().getStatements().getFirst()
+            .filter(statement -> statement instanceof ExplicitConstructorInvocationStmt invocation && invocation.isThis())
+            .isPresent();
     }
 
     /**

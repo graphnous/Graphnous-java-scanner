@@ -570,6 +570,119 @@ class JavaBodyParserTest {
             .allSatisfy(call -> assertThat(call.getTarget()).isEqualTo("com.example.Service.add(int, int)"));
     }
 
+    @Test
+    void givesWhatInitializersUseToTheConstructorsAndTheStaticMethodThatRunThem() throws IOException {
+        final var registry = write("com/example/Registry.java", """
+            package com.example;
+
+            import java.util.ArrayList;
+            import java.util.List;
+
+            public class Registry {
+                static final Registry DEFAULT = new Registry("default");
+                static int instances;
+
+                static {
+                    instances = Integer.parseInt("0");
+                }
+
+                private final List<String> names = new ArrayList<>();
+                private final long created = System.nanoTime();
+
+                {
+                    names.add("first");
+                }
+
+                public Registry(String name) {
+                    instances++;
+                }
+
+                public Registry() {
+                    this("unnamed");
+                }
+            }
+            """);
+
+        final var file = parse(registry, registry);
+        final var methods = file.getClasses().getFirst().getMethods();
+
+        assertThat(methods)
+            .extracting(Method::getQualifiedName, Method::getKind, Method::getModifiers)
+            .containsExactly(
+                tuple("com.example.Registry.Registry(java.lang.String)", Method.Kind.CONSTRUCTOR, List.of(dev.graphnous.scanner.model.Modifier.PUBLIC)),
+                tuple("com.example.Registry.Registry()", Method.Kind.CONSTRUCTOR, List.of(dev.graphnous.scanner.model.Modifier.PUBLIC)),
+                tuple("com.example.Registry.static()", Method.Kind.METHOD, List.of(dev.graphnous.scanner.model.Modifier.STATIC))
+            );
+
+        // The instance initializers run in the constructor that does not
+        // hand over to the other one, before its body
+        assertThat(methods.get(0).getCalls())
+            .extracting(Call::getTarget)
+            .containsExactly("java.util.ArrayList.ArrayList()", "java.lang.System.nanoTime()", "java.util.List.add(E)");
+        assertThat(methods.get(0).getFieldAccesses())
+            .extracting(FieldAccess::getTarget)
+            .containsExactly("com.example.Registry.names", "com.example.Registry.instances");
+        assertThat(methods.get(1).getCalls())
+            .extracting(Call::getTarget)
+            .containsExactly("com.example.Registry.Registry(java.lang.String)");
+
+        assertThat(methods.get(2).getCalls())
+            .extracting(Call::getTarget)
+            .containsExactly("com.example.Registry.Registry(java.lang.String)", "java.lang.Integer.parseInt(java.lang.String)");
+        assertThat(methods.get(2).getFieldAccesses())
+            .extracting(FieldAccess::getTarget)
+            .containsExactly("com.example.Registry.instances");
+    }
+
+    @Test
+    void listsTheDefaultConstructorWhenInitializersUseAnything() throws IOException {
+        final var cache = write("com/example/Cache.java", """
+            package com.example;
+
+            import java.util.HashMap;
+            import java.util.Map;
+
+            class Cache {
+                private final Map<String, String> entries = new HashMap<>();
+
+                enum Level {
+                    LOW(Integer.valueOf(1));
+
+                    Level(Integer value) { }
+                }
+            }
+
+            class Plain {
+                private int count = 0;
+            }
+
+            interface Settings {
+                String HOME = System.getProperty("user.home");
+            }
+            """);
+
+        final var file = parse(cache, cache);
+        final var classes = new ArrayList<dev.graphnous.scanner.model.Class>(file.getClasses());
+        file.getClasses().forEach(clazz -> classes.addAll(clazz.getClasses()));
+
+        assertThat(classes)
+            .extracting(
+                dev.graphnous.scanner.model.Class::getQualifiedName,
+                clazz -> clazz.getMethods().stream()
+                    .map(method -> method.getQualifiedName() + " " + method.getCalls().stream().map(Call::getTarget).toList())
+                    .toList()
+            )
+            .containsExactlyInAnyOrder(
+                tuple("com.example.Cache", List.of("com.example.Cache.Cache() [java.util.HashMap.HashMap()]")),
+                tuple("com.example.Cache.Level", List.of(
+                    "com.example.Cache.Level.Level(java.lang.Integer) []",
+                    "com.example.Cache.Level.static() [java.lang.Integer.valueOf(int)]"
+                )),
+                tuple("com.example.Plain", List.of()),
+                tuple("com.example.Settings", List.of("com.example.Settings.static() [java.lang.System.getProperty(java.lang.String)]"))
+            );
+    }
+
     private Path write(final String name, final String source) throws IOException {
         final var path = directory.resolve(name);
         Files.createDirectories(path.getParent());

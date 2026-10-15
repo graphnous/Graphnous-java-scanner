@@ -53,6 +53,14 @@ java -jar java-scanner-app/target/java-scanner.jar \
 - For each call: its arguments as written, each on one line and cut off at
   200 characters, in the order written.
 
+What initializers use belongs to what runs them: field initializers and
+initializer blocks to each constructor that runs them, or to the default
+constructor the compiler adds, e.g. `com.example.Order.Order()`, and static
+field initializers and `static { }` blocks to a method `static` of the
+class, e.g. `com.example.Order.static()` for
+`static final Logger LOG = LoggerFactory.getLogger(Order.class)`. Those
+methods are listed when the initializers use anything.
+
 Calls into a library resolve only when the scanner has the jars of the
 project's libraries; see below. Without them, calls into the JDK and the
 project's own code still resolve.
