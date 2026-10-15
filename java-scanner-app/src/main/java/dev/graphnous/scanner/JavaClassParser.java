@@ -946,6 +946,8 @@ public class JavaClassParser {
                         annotations.annotations(field.getAnnotations())
                     );
 
+                    JavaConstants.text(variable).ifPresent(element::setConstant);
+
                     JavaLocations.locate(field, element);
                     fields.add(element);
                 });

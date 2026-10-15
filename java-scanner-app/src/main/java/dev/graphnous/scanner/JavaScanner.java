@@ -121,7 +121,38 @@ public class JavaScanner implements Scanner {
                 schema.getModules().add(module);
             });
 
+        configuration(path.resolve(target.getPath()).normalize(), modules);
+
         return schema;
+    }
+
+    /**
+     * The configuration properties of each module that the code of the
+     * modules refers to, see {@link JavaConfiguration}: after all modules
+     * are parsed, as a library module may read what an application module
+     * sets.
+     */
+    private void configuration(
+        final Path targetPath,
+        final List<Module> modules
+    ) {
+        final var configuration = JavaConfiguration.of(modules, log);
+
+        modules.forEach(module -> {
+            final var properties = configuration.read(targetPath.resolve(module.getPath()).normalize(), targetPath);
+
+            if (properties == null) {
+                // Absent from the result, rather than empty
+                module.setConfiguration(null);
+            } else {
+                module.setConfiguration(new ArrayList<>(properties));
+
+                log.detail(
+                    "Module " + module.getPath() + ": "
+                    + properties.size() + (properties.size() == 1 ? " configuration property" : " configuration properties")
+                );
+            }
+        });
     }
 
     /**

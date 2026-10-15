@@ -703,7 +703,8 @@ class JavaClassParserTest {
                 unit = TimeUnit.SECONDS,
                 type = Order.class,
                 cache = @Cache(name = "orders", ttl = 60),
-                expression = "/api" + PATH
+                expression = "/api" + PATH,
+                written = "/api" + System.lineSeparator()
             )
             @SuppressWarnings("unchecked")
             class Api {
@@ -726,7 +727,8 @@ class JavaClassParserTest {
                 entry("unit", "java.util.concurrent.TimeUnit.SECONDS"),
                 entry("type", "com.example.Order.class"),
                 entry("cache", annotations.getFirst().getArguments().getAdditionalProperties().get("cache")),
-                entry("expression", "\"/api\" + PATH")
+                entry("expression", "/api/orders"),
+                entry("written", "\"/api\" + System.lineSeparator()")
             );
 
         assertThat(annotations.getFirst().getArguments().getAdditionalProperties().get("cache"))

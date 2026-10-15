@@ -216,6 +216,7 @@ final class JavaBodyParser {
         arguments.forEach(expression -> {
             final var argument = new Argument();
             argument.setValue(written(expression));
+            JavaConstants.text(expression).ifPresent(argument::setConstant);
 
             call.getArguments().add(argument);
         });

@@ -29,8 +29,11 @@ import java.util.List;
  *     <li>arrays as lists,</li>
  *     <li>class literals as the qualified type plus {@code .class}, e.g.
  *     {@code java.lang.String.class},</li>
- *     <li>constants such as enum values as qualified references, e.g.
- *     {@code org.example.Method.GET},</li>
+ *     <li>constants of the scanned sources, and expressions of them, as
+ *     their values, e.g. {@code /api/orders} for {@code "/api" + Paths.ORDERS},
+ *     see {@link JavaConstants},</li>
+ *     <li>other constants, such as enum values, as qualified references,
+ *     e.g. {@code org.example.Method.GET},</li>
  *     <li>nested annotations as annotations,</li>
  *     <li>anything else, such as {@code "/api" + PATH}, as its source.</li>
  * </ul>
@@ -105,12 +108,34 @@ class JavaAnnotationParser {
                 .map(this::value)
                 .toList();
             case ClassExpr classExpr -> resolver.resolve(classExpr.getType(), classExpr) + ".class";
-            case FieldAccessExpr constant when constant.getScope().isNameExpr()
-                || constant.getScope().isFieldAccessExpr() ->
-                resolver.resolveName(constant.getScope().toString(), constant) + "." + constant.getNameAsString();
             case AnnotationExpr annotation -> annotation(annotation);
-            default -> expression.toString();
+            default -> {
+                final var constant = constant(expression);
+
+                if (constant != null) {
+                    yield constant;
+                }
+
+                if (expression instanceof FieldAccessExpr access
+                    && (access.getScope().isNameExpr() || access.getScope().isFieldAccessExpr())) {
+                    yield resolver.resolveName(access.getScope().toString(), access) + "." + access.getNameAsString();
+                }
+
+                yield expression.toString();
+            }
         };
+    }
+
+    /**
+     * The value of a constant expression, such as {@code Topics.CREATED}
+     * or {@code "/api" + PATH}, as a JSON value: a char as a string; null
+     * when it is none, or when it holds a secret.
+     */
+    private static Object constant(final Expression expression) {
+        return JavaConstants.value(expression)
+            .map(value -> value instanceof Character character ? String.valueOf(character) : value)
+            .filter(value -> !(value instanceof String text) || !Secrets.holdsSecret(text))
+            .orElse(null);
     }
 
     private static Number negate(final Number number) {
