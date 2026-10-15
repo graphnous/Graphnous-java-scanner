@@ -412,7 +412,8 @@ final class JavaConfiguration {
 
     /**
      * The index of the brace that closes a placeholder whose key starts at
-     * the index; -1 when none does.
+     * the index; -1 when none does. Braces within it, as in the default of
+     * {@code ${item-path:/{id}}}, are nested, as Spring takes them.
      */
     private static int closing(
         final String text,
@@ -421,9 +422,8 @@ final class JavaConfiguration {
         var depth = 1;
 
         for (int i = start; i < text.length(); i++) {
-            if (text.startsWith("${", i)) {
+            if (text.charAt(i) == '{') {
                 depth++;
-                i++;
             } else if (text.charAt(i) == '}' && --depth == 0) {
                 return i;
             }
@@ -440,9 +440,8 @@ final class JavaConfiguration {
         var depth = 0;
 
         for (int i = 0; i < inner.length(); i++) {
-            if (inner.startsWith("${", i)) {
+            if (inner.charAt(i) == '{') {
                 depth++;
-                i++;
             } else if (inner.charAt(i) == '}') {
                 depth--;
             } else if (inner.charAt(i) == ':' && depth == 0) {

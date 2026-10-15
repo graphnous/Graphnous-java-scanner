@@ -92,9 +92,12 @@ class JavaConfigurationTest {
     void findsTheKeysOfPlaceholders() {
         final var keys = new ArrayList<String>();
 
-        JavaConfiguration.placeholders("${orders.topic} and ${orders.group:${ORDERS_GROUP:billing}} and ${ ignored", keys::add);
+        JavaConfiguration.placeholders(
+            "${orders.topic} and ${orders.group:${ORDERS_GROUP:billing}} and ${orders.item:/{id}}/${orders.path} and ${ ignored",
+            keys::add
+        );
 
-        assertThat(keys).containsExactly("orders.topic", "orders.group", "ORDERS_GROUP");
+        assertThat(keys).containsExactly("orders.topic", "orders.group", "ORDERS_GROUP", "orders.item", "orders.path");
     }
 
     @Test
