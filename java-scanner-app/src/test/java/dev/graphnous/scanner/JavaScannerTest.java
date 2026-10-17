@@ -110,6 +110,63 @@ class JavaScannerTest {
     }
 
     @Test
+    void takesTheValuesOfConstantsOfOtherClassesAndModulesInAnnotations() throws IOException {
+        write("pom.xml", "<project/>");
+        write("domain/pom.xml", "<project/>");
+        write("domain/src/main/java/com/example/domain/Paths.java", """
+            package com.example.domain;
+            public interface Paths {
+                String API = "/api/v1";
+                String ORDERS = API + "/orders";
+            }
+            """);
+        write("api/pom.xml", "<project/>");
+        write("api/src/main/java/com/example/api/OrderApi.java", """
+            package com.example.api;
+
+            import com.example.domain.Paths;
+            import org.springframework.web.bind.annotation.*;
+
+            import static com.example.domain.Paths.API;
+
+            @RestController
+            @RequestMapping(Paths.ORDERS)
+            class OrderApi {
+                static final String CALLBACK = "/callback";
+
+                @GetMapping(CALLBACK)
+                void callback() { }
+
+                @PostMapping(API + "/orders/{id}" + CALLBACK)
+                void notify(String id) { }
+
+                @GetMapping(Unknown.PATH)
+                void unknown() { }
+            }
+            """);
+
+        final var target = new ScanTarget();
+        target.setPath(".");
+        target.setLanguage(ScanTarget.Language.JAVA);
+        target.setBuildSystem(ScanTarget.BuildSystem.MAVEN);
+
+        final var api = module(scanner.scan(repository, target).getModules(), "api");
+        final var clazz = api.getFiles().getFirst().getClasses().getFirst();
+
+        assertThat(clazz.getAnnotations().get(1).getArguments().getAdditionalProperties())
+            .containsEntry("value", "/api/v1/orders");
+        assertThat(clazz.getMethods())
+            .extracting(method -> method.getAnnotations().getFirst().getArguments().getAdditionalProperties().get("value"))
+            .containsExactly(
+                "/callback",
+                "/api/v1/orders/{id}/callback",
+                // A constant the scan does not have keeps its reference, of a class taken to be in the
+                // one library package imported on demand
+                "org.springframework.web.bind.annotation.Unknown.PATH"
+            );
+    }
+
+    @Test
     void setsTheMavenVersionOfTheWrapper() throws IOException {
         write("pom.xml", "<project/>");
         write(".mvn/wrapper/maven-wrapper.properties",
