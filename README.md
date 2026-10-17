@@ -52,6 +52,11 @@ java -jar java-scanner-app/target/java-scanner.jar \
   kept as written, with `resolved` set to `false`.
 - For each call: its arguments as written, each on one line and cut off at
   200 characters, in the order written.
+- The values of constants, and of the arguments and annotation arguments
+  that are constant expressions, as the compiler computes them, e.g.
+  `orders.created` for `Topics.CREATED` or for `Topics.PREFIX + "created"`.
+- The configuration properties of each module that the code refers to; see
+  [Configuration](#configuration).
 
 What initializers use belongs to what runs them: field initializers and
 initializer blocks to each constructor that runs them, or to the default
@@ -64,6 +69,42 @@ methods are listed when the initializers use anything.
 Calls into a library resolve only when the scanner has the jars of the
 project's libraries; see below. Without them, calls into the JDK and the
 project's own code still resolve.
+
+### Configuration
+
+The scanner reads the `application` and `bootstrap` properties and YAML
+files of each module, in `src/main/resources` and its `config` directory,
+with those of each profile, such as `application-prod.yml`, and the
+documents of a file, such as one for `spring.config.activate.on-profile:
+prod`. It keeps only the properties:
+
+- whose key the code of any module of the target refers to: in a `${...}`
+  placeholder of an annotation or call argument, e.g.
+  `@KafkaListener(topics = "${orders.topic}")` or `@Value("${orders.topic}")`,
+  or by passing the key to `getProperty`; with the keys below it, so
+  `app.topics` keeps `app.topics[0]`;
+- under the prefix of a `@ConfigurationProperties` class or method;
+- that a property kept refers to, as `orders.topic: ${app.prefix}.created`
+  refers to `app.prefix`;
+- that Spring reads to name a destination or a path:
+  `spring.application.name`, `server.servlet.context-path`,
+  `spring.mvc.servlet.path`, `spring.webflux.base-path`,
+  `spring.kafka.template.default-topic`, `spring.kafka.consumer.group-id`,
+  `spring.rabbitmq.template.exchange`, `spring.rabbitmq.template.routing-key`,
+  `spring.rabbitmq.template.default-receive-queue`,
+  `spring.jms.template.default-destination`,
+  `spring.cloud.stream.function.definition`, and the `destination` and
+  `group` of each `spring.cloud.stream.bindings`.
+
+Keys are compared as Spring binds them, so `orders.topic-name` is
+`orders.topicName`.
+
+Secrets are never kept, whatever refers to them: a property or constant
+whose name contains `password`, `passwd`, `secret`, `token`, `credential`,
+`apikey`, `accesskey`, `privatekey` or `authorization`, in any case and
+ignoring `-`, `_` and `.`, is left out, as is a value with a url with a
+password, such as `jdbc:postgresql://app:secret@db/orders`, a `password=`
+setting or a private key. Environment variables are not read.
 
 ## Libraries
 
